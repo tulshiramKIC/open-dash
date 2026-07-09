@@ -1,12 +1,18 @@
 package com.example.opendash.data
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import java.util.Calendar
+import kotlin.math.ceil
 
 /**
  * Posts a reminder when a maintenance item comes due. There's no continuous background
@@ -25,8 +31,17 @@ object MaintenanceNotifier {
     private const val KEY_NOTIFIED = "notified_sids"
 
     /** An item is "due" once it's within the last 25% of its interval (matches the UI warn/alert tone). */
-    private fun isDue(m: MaintenanceItem, odo: Int): Boolean =
-        (m.lastDoneOdoKm + m.intervalKm - odo) < m.intervalKm * 0.25
+    private fun isDue(m: MaintenanceItem, odo: Int): Boolean {
+        val distanceDue = (m.lastDoneOdoKm + m.intervalKm - odo) < m.intervalKm * 0.25
+        val schedule = Himalayan450MaintenanceSchedule.forItem(m)
+        val months = schedule?.intervalMonths ?: return distanceDue
+        val dueAt = Calendar.getInstance().apply {
+            timeInMillis = m.lastDoneDateMs
+            add(Calendar.MONTH, months)
+        }.timeInMillis
+        val remainingDays = ceil((dueAt - System.currentTimeMillis()) / 86_400_000.0).toLong()
+        return distanceDue || remainingDays < months * 30 * 0.25
+    }
 
     fun check(context: Context, items: List<MaintenanceItem>, odometer: Int) {
         val ctx = context.applicationContext
@@ -44,11 +59,17 @@ object MaintenanceNotifier {
         val newlyDue = dueSids - notified
         if (newlyDue.isEmpty()) { prefs.edit().putStringSet(KEY_NOTIFIED, stillKnownDue).apply(); return }
 
-        ensureChannel(ctx)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            prefs.edit().putStringSet(KEY_NOTIFIED, stillKnownDue).apply()   // not flagged → can fire later
+            return
+        }
         if (NotificationManagerCompat.from(ctx).areNotificationsEnabled().not()) {
             prefs.edit().putStringSet(KEY_NOTIFIED, stillKnownDue).apply()   // not flagged → can fire later
             return
         }
+        ensureChannel(ctx)
         prefs.edit().putStringSet(KEY_NOTIFIED, dueSids).apply()   // posting now → remember all due
 
         val (title, text) = buildText(due, odometer)
@@ -73,7 +94,17 @@ object MaintenanceNotifier {
     private fun buildText(due: List<MaintenanceItem>, odo: Int): Pair<String, String> {
         fun line(m: MaintenanceItem): String {
             val remaining = m.lastDoneOdoKm + m.intervalKm - odo
+            val schedule = Himalayan450MaintenanceSchedule.forItem(m)
+            val remainingDays = schedule?.intervalMonths?.let { months ->
+                val dueAt = Calendar.getInstance().apply {
+                    timeInMillis = m.lastDoneDateMs
+                    add(Calendar.MONTH, months)
+                }.timeInMillis
+                ceil((dueAt - System.currentTimeMillis()) / 86_400_000.0).toLong()
+            }
+            if (remainingDays != null && remainingDays < 0) return "${m.name} — overdue by date"
             return if (remaining < 0) "${m.name} — overdue ${-remaining} km"
+            else if (remainingDays != null) "${m.name} — due in $remaining km or ${remainingDays.coerceAtLeast(0)} days"
             else "${m.name} — due in $remaining km"
         }
         return if (due.size == 1) "Maintenance due" to line(due.first())
@@ -81,6 +112,7 @@ object MaintenanceNotifier {
     }
 
     private fun ensureChannel(ctx: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
             nm.createNotificationChannel(

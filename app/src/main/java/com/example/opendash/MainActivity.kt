@@ -45,7 +45,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             OpenDashTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    AppNavigation(routeViewModel = routeViewModel)
+                    AppNavigation(
+                        routeViewModel = routeViewModel,
+                    )
                 }
             }
         }
@@ -78,3 +80,5 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+

@@ -1,0 +1,33 @@
+OpenDash
+Copyright 2026 Subtle Sayak and contributors
+
+This project is an independent, unofficial open-source project.
+
+Portions of the dash protocol, streaming, authentication, socket, RTP,
+H.264/NAL processing, Wi-Fi connection, and session sequencing code are
+derived from or adapted from:
+
+NorthStar
+Copyright 2026 Aditya Dasika
+https://github.com/adityadasika21/NorthStar
+Licensed under the Apache License, Version 2.0.
+
+NorthStar itself credits:
+better-dash
+https://github.com/norbertFeron/better-dash
+Licensed under the Apache License, Version 2.0.
+
+OpenDash changes include UI, theming, wallpaper mode, expenses, vehicles,
+media/call handling changes, storage, release/signing changes, and other
+application-specific modifications.
+
+Royal Enfield, Eicher Motors, Himalayan, Tripper, and related names,
+logos, product names, and marks are trademarks or registered trademarks
+of their respective owners. They are used only descriptively to identify
+compatible hardware.
+
+OpenDash is not affiliated with, endorsed by, sponsored by, or approved by
+Royal Enfield, Eicher Motors, or any related entity.
+
+No Royal Enfield source code, proprietary assets, private API keys,
+certificates, logos, or confidential material should be included in this repository.
