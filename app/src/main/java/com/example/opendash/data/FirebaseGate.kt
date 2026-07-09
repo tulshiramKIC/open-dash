@@ -1,13 +1,20 @@
 package com.example.opendash.data
 
 import android.content.Context
+import com.example.opendash.BuildConfig
+import com.google.firebase.FirebaseApp
 
 /**
  * Single source of truth for "is Firebase sync available?".
  *
- * OpenDash stores rider data local-only. Keep this disabled even if a developer has
- * Firebase dependencies or a google-services.json in a local experiment.
+ * Firebase is bring-your-own-project. If the Google Services plugin did not initialize
+ * Firebase for this application id, every auth/sync path stays disabled and OpenDash
+ * remains local-only.
  */
 object FirebaseGate {
-    fun isConfigured(context: Context): Boolean = false
+    fun isConfigured(context: Context): Boolean =
+        runCatching { FirebaseApp.getApps(context).isNotEmpty() }.getOrDefault(false)
+
+    fun canUseGoogleSignIn(context: Context): Boolean =
+        isConfigured(context) && BuildConfig.GOOGLE_WEB_CLIENT_ID.isNotBlank()
 }
