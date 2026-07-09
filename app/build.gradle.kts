@@ -63,8 +63,10 @@ val localProperties = Properties().apply {
 }
 val googleWebClientId = providers.gradleProperty("GOOGLE_WEB_CLIENT_ID").orNull
     ?: localProperties.getProperty("GOOGLE_WEB_CLIENT_ID").orEmpty()
-val useMapboxNavigationExperimental =
-    (providers.gradleProperty("USE_MAPBOX_NAVIGATION_EXPERIMENTAL").orNull
+val useMapboxNavigation =
+    (providers.gradleProperty("USE_MAPBOX_NAVIGATION").orNull
+        ?: localProperties.getProperty("USE_MAPBOX_NAVIGATION")
+        ?: providers.gradleProperty("USE_MAPBOX_NAVIGATION_EXPERIMENTAL").orNull
         ?: localProperties.getProperty("USE_MAPBOX_NAVIGATION_EXPERIMENTAL")
         ?: "false").toBoolean()
 val mapboxAccessToken = providers.gradleProperty("MAPBOX_ACCESS_TOKEN").orNull
@@ -92,8 +94,8 @@ android {
         applicationId = localApplicationId
         minSdk = 24
         targetSdk = 36
-        versionCode = 17
-        versionName = "1.3.4"
+        versionCode = 21
+        versionName = "1.3.5"
 
         buildConfigField(
             "String",
@@ -101,7 +103,8 @@ android {
             "\"${googleWebClientId.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
         )
         buildConfigField("boolean", "CRASHLYTICS_ENABLED", "false")
-        buildConfigField("boolean", "USE_MAPBOX_NAVIGATION_EXPERIMENTAL", useMapboxNavigationExperimental.toString())
+        buildConfigField("boolean", "USE_MAPBOX_NAVIGATION", useMapboxNavigation.toString())
+        buildConfigField("boolean", "USE_MAPBOX_NAVIGATION_EXPERIMENTAL", useMapboxNavigation.toString())
         buildConfigField(
             "String",
             "MAPBOX_ACCESS_TOKEN",
@@ -126,12 +129,14 @@ android {
                 "CRASHLYTICS_ENABLED",
                 firebaseConfigIncludes(playApplicationId).toString(),
             )
+            buildConfigField("boolean", "USE_MAPBOX_NAVIGATION", "true")
             buildConfigField("boolean", "USE_MAPBOX_NAVIGATION_EXPERIMENTAL", "true")
         }
         create("mapboxTest") {
             dimension = "distribution"
             applicationId = mapboxTestApplicationId
             buildConfigField("boolean", "CRASHLYTICS_ENABLED", firebaseConfigIncludes(mapboxTestApplicationId).toString())
+            buildConfigField("boolean", "USE_MAPBOX_NAVIGATION", "true")
             buildConfigField("boolean", "USE_MAPBOX_NAVIGATION_EXPERIMENTAL", "true")
         }
     }
@@ -250,10 +255,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.maplibre)
     implementation(libs.maplibre.annotation)
-    if (useMapboxNavigationExperimental) {
-        implementation(libs.mapbox.maps)
-        implementation(libs.mapbox.navigation)
-    }
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
@@ -262,3 +263,4 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+

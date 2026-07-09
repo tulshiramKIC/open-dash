@@ -1,35 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
-    <!-- Android 13+: WiFi connection without location permission -->
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation"
-        tools:targetApi="tiramisu" />
-    <!-- Android 12 and below fallback -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- Keep streaming to the dash with the screen off -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"
-        tools:targetApi="34" />
-    <!-- Without the location FGS type, Android 14+ freezes GPS updates as soon as
-         the screen goes off — the rider position would stick at its first fix. -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"
-        tools:targetApi="34" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
-    <uses-permission android:name="android.permission.CALL_PHONE" />
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <uses-permission android:name="android.permission.READ_CALL_LOG" />
-    <uses-feature
-        android:name="android.hardware.telephony"
-        android:required="false" />
 
     <application
         android:name=".OpenDashApplication"
@@ -43,8 +18,6 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.OpenDash">
 
-        <!-- Map is MapLibre + OpenFreeMap (keyless). -->
-
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -56,7 +29,6 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Receive shared locations from other apps. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -69,43 +41,6 @@
                 <data android:scheme="geo" />
             </intent-filter>
         </activity>
-
-        <service
-            android:name=".dash.DashKeepAliveService"
-            android:exported="false"
-            android:foregroundServiceType="connectedDevice|location" />
-
-        <service
-            android:name=".quicksettings.DashConnectTileService"
-            android:exported="true"
-            android:icon="@drawable/ic_qs_connect_dash"
-            android:label="Connect Dash"
-            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
-            <intent-filter>
-                <action android:name="android.service.quicksettings.action.QS_TILE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
-                android:value="true" />
-        </service>
-
-        <service
-            android:name=".media.OpenDashNotificationListener"
-            android:exported="false"
-            android:label="OpenDash media and calls"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
-            <intent-filter>
-                <action android:name="android.service.notification.NotificationListenerService" />
-            </intent-filter>
-        </service>
-
-        <receiver
-            android:name=".media.PhoneCallReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.PHONE_STATE" />
-            </intent-filter>
-        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

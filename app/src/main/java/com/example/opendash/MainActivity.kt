@@ -9,7 +9,6 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.ui.Modifier
 import com.example.opendash.data.SyncRepository
 import com.example.opendash.ui.navigation.AppNavigation
@@ -20,11 +19,6 @@ import com.google.firebase.auth.FirebaseAuth
 class MainActivity : ComponentActivity() {
     private val routeViewModel: RouteViewModel by viewModels()
     private var authListener: FirebaseAuth.AuthStateListener? = null
-    private val connectDashRequest = mutableLongStateOf(0L)
-
-    companion object {
-        const val ACTION_CONNECT_DASH = "com.example.opendash.action.CONNECT_DASH"
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,7 +47,6 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     AppNavigation(
                         routeViewModel = routeViewModel,
-                        connectDashRequest = connectDashRequest.longValue,
                     )
                 }
             }
@@ -74,9 +67,6 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         when (intent?.action) {
-            ACTION_CONNECT_DASH -> {
-                connectDashRequest.longValue = System.currentTimeMillis()
-            }
             Intent.ACTION_SEND -> {
                 if (intent.type == "text/plain") {
                     val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
@@ -90,3 +80,5 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+

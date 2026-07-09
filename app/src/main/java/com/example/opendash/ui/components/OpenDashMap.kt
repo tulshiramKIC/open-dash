@@ -1,13 +1,11 @@
 package com.example.opendash.ui.components
 
-import com.example.opendash.data.DashDisplayMode
-
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -21,8 +19,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.opendash.BuildConfig
-import com.example.opendash.data.ExperimentalNavigationSettings
-import com.example.opendash.dash.nav.GeoPoint
+import com.example.opendash.data.MapboxNavigationSettings
+import com.example.opendash.navigation.route.GeoPoint
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -36,7 +34,7 @@ import org.maplibre.android.plugins.annotation.LineOptions
 import org.maplibre.android.plugins.annotation.SymbolManager
 import org.maplibre.android.plugins.annotation.SymbolOptions
 
-// Default phone-preview basemap. The experimental Mapbox flag swaps this to detailed Mapbox tiles.
+// Default phone-preview basemap. Release builds use Mapbox tiles when configured.
 private const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 private fun mapboxNavigationStyleId(night: Boolean): String =
     if (night) "dark-v11" else "streets-v12"
@@ -47,8 +45,8 @@ private const val RIDER_ICON = "rider-chevron"
 private const val DEST_ICON = "dest-pin"
 
 /**
- * In-app phone map. Defaults to OpenFreeMap, and uses Mapbox raster tiles when the
- * experimental Mapbox navigation flag and access token are both present.
+ * In-app phone map. Uses Mapbox raster tiles when the primary Mapbox provider and
+ * access token are configured, with OpenFreeMap as the local fallback.
  *
  * Modes: [fitRoute] frames the whole route; [navMode] tilts/zooms/rotates to heading with a
  * rider chevron; default follows the rider north-up.
@@ -68,16 +66,15 @@ fun OpenDashMap(
     val context = LocalContext.current
     remember { MapLibre.getInstance(context) }
     remember(context) {
-        ExperimentalNavigationSettings.init(context.applicationContext)
+        MapboxNavigationSettings.init(context.applicationContext)
         true
     }
-    val mapboxNavigationEnabled by ExperimentalNavigationSettings.mapboxNavigationEnabled.collectAsState()
+    val mapboxNavigationEnabled by MapboxNavigationSettings.mapboxNavigationEnabled.collectAsState()
     val useMapboxPreview =
-        BuildConfig.USE_MAPBOX_NAVIGATION_EXPERIMENTAL &&
+        BuildConfig.USE_MAPBOX_NAVIGATION &&
             mapboxNavigationEnabled &&
             BuildConfig.MAPBOX_ACCESS_TOKEN.isNotBlank()
-    val dashNightModeState = DashDisplayMode.nightMode.collectAsState()
-    val mapboxStyleId = mapboxNavigationStyleId(dashNightModeState.value)
+    val mapboxStyleId = mapboxNavigationStyleId(false)
     val styleKey = if (useMapboxPreview) "mapbox-$mapboxStyleId" else "openfreemap"
     val mapView = remember { MapView(context) }
 
@@ -252,3 +249,5 @@ private fun destPinBitmap(): Bitmap {
     p.color = android.graphics.Color.WHITE; c.drawCircle(s / 2f, s / 2f, s * 0.09f, p)
     return bmp
 }
+
+

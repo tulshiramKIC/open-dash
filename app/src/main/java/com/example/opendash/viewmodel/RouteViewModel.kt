@@ -8,9 +8,9 @@ import android.location.LocationManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.opendash.data.SharedLocation
-import com.example.opendash.dash.nav.GeoPoint
-import com.example.opendash.dash.nav.Route
-import com.example.opendash.dash.nav.Router
+import com.example.opendash.navigation.route.GeoPoint
+import com.example.opendash.navigation.route.Route
+import com.example.opendash.navigation.route.Router
 import com.example.opendash.util.LocationParser
 import com.example.opendash.util.DebugLog
 import kotlinx.coroutines.Dispatchers
@@ -176,3 +176,4 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
     private fun fmtEta(sec: Double): String =
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(System.currentTimeMillis() + (sec * 1000).toLong()))
 }
+

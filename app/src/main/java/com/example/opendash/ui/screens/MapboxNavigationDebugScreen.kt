@@ -60,7 +60,7 @@ fun MapboxNavigationDebugScreen(
     ) {
         ScreenHeader(title = "Mapbox debug", onBack = onBack)
         Text(
-            if (BuildConfig.USE_MAPBOX_NAVIGATION_EXPERIMENTAL) "Experimental provider enabled" else "Experimental provider disabled",
+            if (BuildConfig.USE_MAPBOX_NAVIGATION) "Primary provider enabled" else "Primary provider disabled",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontFamily = GeistFamily,
         )

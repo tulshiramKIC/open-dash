@@ -1,9 +1,6 @@
 package com.example.opendash.data
 
 import android.content.Context
-import com.example.opendash.dash.DashConfig
-import com.example.opendash.dash.DashConfigSnapshot
-import com.example.opendash.dash.DashCredentialSnapshot
 import com.example.opendash.util.DebugLog
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.CollectionReference
@@ -40,8 +37,6 @@ class SyncRepository private constructor(context: Context) {
 
     private val appContext = context.applicationContext
     private val db = OpenDashDb.get(appContext)
-    private val dashConfig = DashConfig.get(appContext)
-    private val wallpaperStore = DashWallpaperStore(appContext)
     // Firebase is optional (bring-your-own-project). When no google-services.json was
     // bundled, these stay null and every mirror/listen call is a no-op — the app runs
     // fully local. See [FirebaseGate].
@@ -190,8 +185,6 @@ class SyncRepository private constructor(context: Context) {
     fun pushProfileSettings() {
         val u = userDoc() ?: return
         pushVehicleSettings(u)
-        pushDashSettings(u)
-        pushWallpaperSettings(u)
     }
 
     private fun pushVehicleSettings(u: DocumentReference) {
@@ -214,43 +207,6 @@ class SyncRepository private constructor(context: Context) {
         )
     }
 
-    private fun pushDashSettings(u: DocumentReference) {
-        val snapshot = dashConfig.exportSnapshot(VehicleStore.vehicles.value.map { it.id })
-        u.collection("settings").document("dash").set(
-            mapOf(
-                "ssidPrefix" to snapshot.ssidPrefix,
-                "updatedMs" to System.currentTimeMillis(),
-                "credentials" to snapshot.credentials.map { credential ->
-                    mapOf(
-                        "vehicleId" to credential.vehicleId,
-                        "ssid" to credential.ssid,
-                        "password" to credential.password,
-                    )
-                },
-            ),
-        )
-    }
-
-    private fun pushWallpaperSettings(u: DocumentReference) {
-        val snapshot = wallpaperStore.exportSettings()
-        u.collection("settings").document("wallpaper").set(
-            mapOf(
-                "activeSlot" to snapshot.activeSlot,
-                "updatedMs" to System.currentTimeMillis(),
-                "slots" to snapshot.slots.map { slot ->
-                    mapOf(
-                        "slot" to slot.slot,
-                        "kind" to slot.kind.name,
-                        "horizontalBias" to slot.horizontalBias.toDouble(),
-                        "verticalBias" to slot.verticalBias.toDouble(),
-                        "fit" to slot.fit.name,
-                        "preserveRpmArc" to slot.preserveRpmArc,
-                    )
-                },
-            ),
-        )
-    }
-
     // ── Sync lifecycle ───────────────────────────────────────────────────
     fun startSync() {
         val u = userDoc() ?: return
@@ -259,11 +215,7 @@ class SyncRepository private constructor(context: Context) {
 
         listen(u.collection("fuel"),
             uploadLocal = { VehicleStore.vehicles.value.flatMap { db.fuelFills(it.id) }.forEach { pushFuel(it) } },
-            apply = { doc -> db.upsertFuel(FuelFillup(
-                sid = doc.id, dateMs = doc.getLong("dateMs") ?: 0L, litres = doc.getDouble("litres") ?: 0.0,
-                cost = doc.getDouble("cost") ?: 0.0, odometerKm = (doc.getLong("odometerKm") ?: 0L).toInt(),
-                location = doc.getString("location") ?: "",
-                vehicleId = doc.getString("vehicleId") ?: VehicleStore.DEFAULT_VEHICLE_ID)) },
+            apply = { doc -> db.upsertFuel(remoteFuelFillup(doc.id, doc.data.orEmpty())) },
             remove = { db.deleteFuelBySid(it) })
 
         listen(u.collection("maintenance"),
@@ -277,12 +229,7 @@ class SyncRepository private constructor(context: Context) {
 
         listen(u.collection("expenses"),
             uploadLocal = { VehicleStore.vehicles.value.flatMap { db.expenses(it.id) }.forEach { pushExpense(it) } },
-            apply = { doc -> db.upsertExpense(Expense(
-                sid = doc.id, dateMs = doc.getLong("dateMs") ?: 0L,
-                category = doc.getString("category") ?: "Others",
-                amount = doc.getDouble("amount") ?: 0.0,
-                note = doc.getString("note") ?: "",
-                vehicleId = doc.getString("vehicleId") ?: VehicleStore.DEFAULT_VEHICLE_ID)) },
+            apply = { doc -> db.upsertExpense(remoteExpense(doc.id, doc.data.orEmpty())) },
             remove = { db.deleteExpenseBySid(it) })
 
         listen(u.collection("saved"),
@@ -350,17 +297,7 @@ class SyncRepository private constructor(context: Context) {
             pushLocal = { pushVehicleSettings(u) },
             applyRemote = ::applyVehicleSettings,
         )
-        listenSettingsDoc(
-            doc = u.collection("settings").document("dash"),
-            pushLocal = { pushDashSettings(u) },
-            applyRemote = ::applyDashSettings,
-        )
-        listenSettingsDoc(
-            doc = u.collection("settings").document("wallpaper"),
-            pushLocal = { pushWallpaperSettings(u) },
-            applyRemote = ::applyWallpaperSettings,
-        )
-    }
+}
 
     private fun listenSettingsDoc(
         doc: DocumentReference,
@@ -400,48 +337,7 @@ class SyncRepository private constructor(context: Context) {
             ),
         )
     }
-
-    private fun applyDashSettings(doc: DocumentSnapshot) {
-        val credentials = (doc.get("credentials") as? List<*>)?.mapNotNull { raw ->
-            val map = raw as? Map<*, *> ?: return@mapNotNull null
-            DashCredentialSnapshot(
-                vehicleId = map.string("vehicleId").ifBlank { return@mapNotNull null },
-                ssid = map.string("ssid"),
-                password = map.string("password"),
-            )
-        }.orEmpty()
-        dashConfig.importSnapshot(
-            DashConfigSnapshot(
-                ssidPrefix = doc.getString("ssidPrefix") ?: DashConfig.DEFAULT_PREFIX,
-                credentials = credentials,
-            ),
-        )
-    }
-
-    private fun applyWallpaperSettings(doc: DocumentSnapshot) {
-        val slots = (doc.get("slots") as? List<*>)?.mapNotNull { raw ->
-            val map = raw as? Map<*, *> ?: return@mapNotNull null
-            DashWallpaperSlotSettings(
-                slot = map.long("slot")?.toInt() ?: return@mapNotNull null,
-                kind = enumValueOrDefault(map.string("kind"), DashWallpaperKind.IMAGE),
-                horizontalBias = (map.double("horizontalBias") ?: 0.0).toFloat(),
-                verticalBias = (map.double("verticalBias") ?: 0.0).toFloat(),
-                fit = enumValueOrDefault(map.string("fit"), DashWallpaperFit.CROP),
-                preserveRpmArc = map.boolean("preserveRpmArc") ?: false,
-            )
-        }.orEmpty()
-        wallpaperStore.applySettings(
-            DashWallpaperSettingsSnapshot(
-                activeSlot = (doc.getLong("activeSlot") ?: 0L).toInt(),
-                slots = slots,
-            ),
-        )
-    }
-
-    private inline fun <reified T : Enum<T>> enumValueOrDefault(name: String, fallback: T): T =
-        runCatching { enumValueOf<T>(name) }.getOrDefault(fallback)
-
-    private fun Map<*, *>.string(key: String): String =
+private fun Map<*, *>.string(key: String): String =
         (this[key] as? String).orEmpty()
 
     private fun Map<*, *>.long(key: String): Long? =
@@ -464,3 +360,46 @@ class SyncRepository private constructor(context: Context) {
     private fun Map<*, *>.boolean(key: String): Boolean? =
         this[key] as? Boolean
 }
+
+internal fun remoteFuelFillup(sid: String, fields: Map<String, Any?>): FuelFillup =
+    FuelFillup(
+        sid = sid,
+        dateMs = fields.fieldLong("dateMs") ?: 0L,
+        litres = fields.fieldDouble("litres") ?: 0.0,
+        cost = fields.fieldDouble("cost") ?: 0.0,
+        odometerKm = (fields.fieldLong("odometerKm") ?: 0L).toInt(),
+        location = fields.fieldString("location"),
+        vehicleId = fields.fieldString("vehicleId").ifBlank { VehicleStore.DEFAULT_VEHICLE_ID },
+    )
+
+internal fun remoteExpense(sid: String, fields: Map<String, Any?>): Expense =
+    Expense(
+        sid = sid,
+        dateMs = fields.fieldLong("dateMs") ?: 0L,
+        category = fields.fieldString("category").ifBlank { "Others" },
+        amount = fields.fieldDouble("amount") ?: 0.0,
+        note = fields.fieldString("note"),
+        vehicleId = fields.fieldString("vehicleId").ifBlank { VehicleStore.DEFAULT_VEHICLE_ID },
+    )
+
+
+private fun Map<*, *>.fieldString(key: String): String =
+    (this[key] as? String).orEmpty()
+
+private fun Map<*, *>.fieldLong(key: String): Long? =
+    when (val value = this[key]) {
+        is Long -> value
+        is Int -> value.toLong()
+        is Double -> value.toLong()
+        else -> null
+    }
+
+private fun Map<*, *>.fieldDouble(key: String): Double? =
+    when (val value = this[key]) {
+        is Double -> value
+        is Float -> value.toDouble()
+        is Long -> value.toDouble()
+        is Int -> value.toDouble()
+        else -> null
+    }
+

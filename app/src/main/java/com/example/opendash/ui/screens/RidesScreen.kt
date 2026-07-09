@@ -32,7 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.opendash.data.Ride
-import com.example.opendash.dash.nav.PolylineCodec
+import com.example.opendash.navigation.route.PolylineCodec
 import com.example.opendash.ui.OpenDashIcons
 import com.example.opendash.ui.components.*
 import com.example.opendash.ui.theme.*
@@ -171,7 +171,7 @@ private fun MiniStat(value: String, label: String) {
 }
 
 @Composable
-private fun TrackSketch(points: List<com.example.opendash.dash.nav.GeoPoint>, modifier: Modifier) {
+private fun TrackSketch(points: List<com.example.opendash.navigation.route.GeoPoint>, modifier: Modifier) {
     val primary = MaterialTheme.colorScheme.primary
     val onSurface = MaterialTheme.colorScheme.onSurface
     Canvas(modifier) {
@@ -210,7 +210,7 @@ private fun EmptyRides() {
             Text("No rides recorded yet", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Connect to your dash to start a ride — it's saved automatically when you disconnect.",
+                "Ride history will appear here when rides are recorded by app-only features.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 8.dp),
             )
@@ -224,3 +224,5 @@ private fun fmtDuration(sec: Long): String {
     val h = sec / 3600; val m = (sec % 3600) / 60
     return if (h > 0) "${h}h ${m}m" else "${m}m"
 }
+
+

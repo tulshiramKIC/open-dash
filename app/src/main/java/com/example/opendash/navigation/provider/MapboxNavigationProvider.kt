@@ -2,8 +2,8 @@ package com.example.opendash.navigation.provider
 
 import android.content.Context
 import com.example.opendash.BuildConfig
-import com.example.opendash.dash.nav.GeoPoint
-import com.example.opendash.dash.nav.PolylineCodec
+import com.example.opendash.navigation.route.GeoPoint
+import com.example.opendash.navigation.route.PolylineCodec
 import com.example.opendash.util.DebugLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,7 +47,7 @@ class MapboxNavigationProvider(
             requestMethod = "GET"
             connectTimeout = 12_000
             readTimeout = 12_000
-            setRequestProperty("User-Agent", "OpenDash/${BuildConfig.VERSION_NAME} MapboxExperiment")
+            setRequestProperty("User-Agent", "OpenDash/${BuildConfig.VERSION_NAME} MapboxPrimary")
         }
         try {
             val body = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
@@ -83,13 +83,13 @@ class MapboxNavigationProvider(
     }
 
     private fun ensureEnabled() {
-        check(BuildConfig.USE_MAPBOX_NAVIGATION_EXPERIMENTAL) {
-            "Mapbox navigation experiment is disabled. Set USE_MAPBOX_NAVIGATION_EXPERIMENTAL=true."
+        check(BuildConfig.USE_MAPBOX_NAVIGATION) {
+            "Mapbox navigation is disabled for this build. Set USE_MAPBOX_NAVIGATION=true."
         }
     }
 
     private fun initializeMapboxNavigationSafely() {
-        if (!BuildConfig.USE_MAPBOX_NAVIGATION_EXPERIMENTAL) return
+        if (!BuildConfig.USE_MAPBOX_NAVIGATION) return
         runCatching {
             val app = context.applicationContext
             val providerClass = Class.forName("com.mapbox.navigation.core.MapboxNavigationProvider")
@@ -253,3 +253,4 @@ class MapboxNavigationProvider(
         private const val MOTORCYCLE_ALLEY_BIAS = "0.25"
     }
 }
+

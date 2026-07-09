@@ -1,6 +1,5 @@
 package com.example.opendash.navigation.provider
 
-import com.example.opendash.dash.protocol.DashCommands
 import java.util.Locale
 
 object MapboxManeuverMapper {
@@ -27,14 +26,7 @@ object MapboxManeuverMapper {
             else -> DashManeuverType.UNKNOWN
         }
     }
-
-    fun toDashManeuverCode(type: DashManeuverType): Int =
-        when (type) {
-            // Only CONTINUE is verified on the current dash firmware. Keep the packet layer
-            // conservative while the experimental provider validates icon codes in the field.
-            else -> DashCommands.NAV_MANEUVER_CONTINUE
-        }
-
-    private fun String?.normalized(): String =
+private fun String?.normalized(): String =
         this?.trim()?.lowercase(Locale.US).orEmpty()
 }
+
