@@ -16,6 +16,7 @@ import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -44,11 +45,11 @@ import androidx.compose.ui.unit.sp
 import com.example.opendash.ui.theme.*
 
 // ---- Shape constants ----
-val CardShape    = RoundedCornerShape(8.dp)
-val BtnShape     = RoundedCornerShape(8.dp)
-val InputShape   = RoundedCornerShape(8.dp)
+val CardShape    = RoundedCornerShape(20.dp)
+val BtnShape     = RoundedCornerShape(16.dp)
+val InputShape   = RoundedCornerShape(16.dp)
 val ChipShape    = CircleShape
-val IconBtnShape = RoundedCornerShape(8.dp)
+val IconBtnShape = CircleShape
 
 // ---- Card ----
 @Composable
@@ -102,6 +103,7 @@ fun OpenDashSurfaceCard(
 enum class BtnVariant { Primary, Secondary, Ghost, Danger }
 enum class BtnSize { Lg, Md, Sm }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun OpenDashBtn(
     label: String,
@@ -115,11 +117,23 @@ fun OpenDashBtn(
     val height = when (size) { BtnSize.Lg -> 58.dp; BtnSize.Md -> 50.dp; BtnSize.Sm -> 40.dp }
     val fontSize = when (size) { BtnSize.Lg -> 16.sp; BtnSize.Md -> 15.sp; BtnSize.Sm -> 13.5.sp }
     val iconSize = when (size) { BtnSize.Sm -> 17.dp; else -> 20.dp }
+    val enabledContentColor = when (variant) {
+        BtnVariant.Primary -> MaterialTheme.colorScheme.onPrimary
+        BtnVariant.Secondary -> MaterialTheme.colorScheme.onSurface
+        BtnVariant.Ghost -> MaterialTheme.colorScheme.onSurfaceVariant
+        BtnVariant.Danger -> MaterialTheme.colorScheme.error
+    }
+    val resolvedContentColor = if (enabled) {
+        enabledContentColor
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+    }
     val content: @Composable RowScope.() -> Unit = {
         if (icon != null) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
+                tint = resolvedContentColor,
                 modifier = Modifier.size(iconSize),
             )
             Spacer(Modifier.width(9.dp))
@@ -129,6 +143,7 @@ fun OpenDashBtn(
             fontSize = fontSize,
             fontWeight = FontWeight.SemiBold,
             fontFamily = GeistFamily,
+            color = resolvedContentColor,
             letterSpacing = 0.sp,
             maxLines = 1,
         )
@@ -137,19 +152,19 @@ fun OpenDashBtn(
     when (variant) {
         BtnVariant.Primary -> Button(
             onClick = onClick,
-            modifier = modifier.height(height),
+            modifier = modifier.heightIn(min = height),
             enabled = enabled,
-            shape = BtnShape,
+            shapes = ButtonDefaults.shapes(),
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
-            )
+            ),
         ) { content() }
         BtnVariant.Secondary -> OutlinedButton(
             onClick = onClick,
-            modifier = modifier.height(height),
+            modifier = modifier.heightIn(min = height),
             enabled = enabled,
-            shape = BtnShape,
+            shapes = ButtonDefaults.shapes(),
             colors = ButtonDefaults.outlinedButtonColors(
                 contentColor = MaterialTheme.colorScheme.onSurface,
             ),
@@ -157,18 +172,18 @@ fun OpenDashBtn(
         ) { content() }
         BtnVariant.Ghost -> TextButton(
             onClick = onClick,
-            modifier = modifier.height(height),
+            modifier = modifier.heightIn(min = height),
             enabled = enabled,
-            shape = BtnShape,
+            shapes = ButtonDefaults.shapes(),
             colors = ButtonDefaults.textButtonColors(
                 contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
             ),
         ) { content() }
         BtnVariant.Danger -> OutlinedButton(
             onClick = onClick,
-            modifier = modifier.height(height),
+            modifier = modifier.heightIn(min = height),
             enabled = enabled,
-            shape = BtnShape,
+            shapes = ButtonDefaults.shapes(),
             colors = ButtonDefaults.outlinedButtonColors(
                 contentColor = MaterialTheme.colorScheme.error,
             ),
@@ -178,6 +193,7 @@ fun OpenDashBtn(
 }
 
 // ---- Icon button (square rounded) ----
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun OpenDashIconBtn(
     icon: ImageVector,
@@ -189,6 +205,7 @@ fun OpenDashIconBtn(
 ) {
     IconButton(
         onClick = onClick,
+        shapes = IconButtonDefaults.shapes(),
         modifier = modifier
             .size(size),
         colors = IconButtonDefaults.iconButtonColors(
@@ -306,7 +323,7 @@ fun OpenDashSegmented(
 // ---- Divider ----
 @Composable
 fun OpenDashDivider(modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth().height(1.dp).background(Line))
+    Box(modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
 }
 
 // ---- Eyebrow label ----
@@ -314,7 +331,7 @@ fun OpenDashDivider(modifier: Modifier = Modifier) {
 fun Eyebrow(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text.uppercase(),
-        color = TextLo,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         fontSize = 11.sp,
         letterSpacing = 0.16.sp,
         fontFamily = GeistMonoFamily,
@@ -340,10 +357,10 @@ fun OpenDashRow(
     onClick: (() -> Unit)? = null,
 ) {
     val (iconBg, iconFg) = when (iconTone) {
-        IconTone.Gold   -> GoldTint to Gold
+        IconTone.Gold   -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.primary
         IconTone.Alert  -> Alert.copy(alpha = 0.13f) to Alert
         IconTone.Warn   -> Warn.copy(alpha = 0.13f) to Warn
-        IconTone.Neutral -> Surf2 to TextMid
+        IconTone.Neutral -> MaterialTheme.colorScheme.surfaceContainerHigh to MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Row(
@@ -358,9 +375,9 @@ fun OpenDashRow(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .size(42.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(16.dp))
                     .background(iconBg)
-                    .border(1.dp, Line, RoundedCornerShape(12.dp)),
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp)),
             ) {
                 Icon(icon, contentDescription = null, tint = iconFg, modifier = Modifier.size(20.dp))
             }
@@ -368,12 +385,12 @@ fun OpenDashRow(
         }
         Column(Modifier.weight(1f)) {
             Text(
-                title, color = TextHi, fontSize = 15.5.sp, fontWeight = FontWeight.SemiBold,
+                title, color = MaterialTheme.colorScheme.onSurface, fontSize = 15.5.sp, fontWeight = FontWeight.SemiBold,
                 fontFamily = GeistFamily, letterSpacing = (-0.15).sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             if (sub != null) {
-                Text(sub, color = TextLo, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+                Text(sub, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
             }
         }
         if (right != null || rightSub != null) {
@@ -381,13 +398,13 @@ fun OpenDashRow(
                 if (right != null) {
                     Text(
                         right,
-                        color = if (accentRight) Gold else TextHi,
+                        color = if (accentRight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                         fontSize = 14.5.sp, fontWeight = FontWeight.Medium,
                         fontFamily = GeistMonoFamily,
                     )
                 }
                 if (rightSub != null) {
-                    Text(rightSub, color = TextLo, fontSize = 11.5.sp)
+                    Text(rightSub, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.5.sp)
                 }
             }
         }
@@ -395,7 +412,7 @@ fun OpenDashRow(
             Spacer(Modifier.width(8.dp))
             Icon(
                 Icons.Outlined.ChevronRight,
-                contentDescription = null, tint = TextLo, modifier = Modifier.size(18.dp),
+                contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp),
             )
         }
     }
@@ -415,8 +432,8 @@ fun ScreenHeader(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
-            .padding(bottom = 18.dp)
-            .defaultMinSize(minHeight = 44.dp),
+            .padding(bottom = 20.dp, top = 4.dp)
+            .defaultMinSize(minHeight = 56.dp),
     ) {
         if (onBack != null) {
             OpenDashIconBtn(
@@ -430,19 +447,19 @@ fun ScreenHeader(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "OpenDash",
-                        color = TextHi, fontFamily = GeistMonoFamily,
+                        color = MaterialTheme.colorScheme.onSurface, fontFamily = GeistMonoFamily,
                         fontWeight = FontWeight.Bold, fontSize = 21.sp,
                         letterSpacing = 0.14.sp,
                     )
                     Spacer(Modifier.width(8.dp))
-                    Box(Modifier.size(6.dp).clip(CircleShape).background(Gold))
+                    Box(Modifier.size(6.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
                 }
             } else {
                 Column {
                     if (eyebrow != null) Eyebrow(eyebrow, Modifier.padding(bottom = 3.dp))
                     if (title != null) {
                         Text(
-                            title, color = TextHi, fontSize = 23.sp,
+                            title, color = MaterialTheme.colorScheme.onSurface, fontSize = 30.sp,
                             fontWeight = FontWeight.Bold, fontFamily = GeistFamily,
                             letterSpacing = 0.sp,
                         )

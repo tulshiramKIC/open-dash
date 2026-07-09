@@ -1,8 +1,13 @@
 package com.example.opendash
 
 import android.app.Application
+import com.example.opendash.data.VehicleStore
+import com.example.opendash.util.CrashReporter
 
 class OpenDashApplication : Application() {
-    // Firebase is auto-initialized from google-services.json via the Google Services plugin.
-    // Add any other app-wide init here as phases are built out.
+    override fun onCreate() {
+        super.onCreate()
+        CrashReporter.init(this)
+        VehicleStore.init(this)
+    }
 }

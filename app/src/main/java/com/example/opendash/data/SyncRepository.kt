@@ -35,7 +35,8 @@ class SyncRepository private constructor(context: Context) {
             instance ?: synchronized(this) { instance ?: SyncRepository(context.applicationContext).also { instance = it } }
     }
 
-    private val db = OpenDashDb.get(context)
+    private val appContext = context.applicationContext
+    private val db = OpenDashDb.get(appContext)
     // Firebase is optional (bring-your-own-project). When no google-services.json was
     // bundled, these stay null and every mirror/listen call is a no-op — the app runs
     // fully local. See [FirebaseGate].
@@ -55,45 +56,82 @@ class SyncRepository private constructor(context: Context) {
         auth?.currentUser?.uid?.let { fs?.collection("users")?.document(it) }
 
     // ── Reads (local) ────────────────────────────────────────────────────
-    fun odometer() = db.odometer()
-    fun fuelFills() = db.fuelFills()
-    fun expenses() = db.expenses()
-    fun maintenanceItems() = db.maintenanceItems()
+    fun odometer(vehicleId: String = VehicleStore.activeVehicleId.value) = db.odometer(vehicleId)
+    fun fuelFills(vehicleId: String = VehicleStore.activeVehicleId.value) = db.fuelFills(vehicleId)
+    fun expenses(vehicleId: String = VehicleStore.activeVehicleId.value) = db.expenses(vehicleId)
+    fun maintenanceItems(vehicleId: String = VehicleStore.activeVehicleId.value) = db.maintenanceItems(vehicleId)
+    fun ensureMaintenance(vehicleId: String = VehicleStore.activeVehicleId.value) {
+        db.ensureMaintenanceForVehicle(vehicleId); bump()
+    }
     fun savedLocations() = db.savedLocations()
     fun rides() = db.rides()
 
     // ── Mutations (local write-through + Firestore mirror) ────────────────
-    fun setOdometer(km: Int) { db.setOdometer(km); pushOdometer(km); bump() }
+    fun setOdometer(km: Int, vehicleId: String = VehicleStore.activeVehicleId.value) {
+        db.setOdometer(km, vehicleId); pushOdometer(km, vehicleId); bump()
+    }
 
-    fun addFuel(litres: Double, cost: Double, odoKm: Int, location: String) {
-        val prevOdo = db.odometer()
+    fun addFuel(
+        litres: Double,
+        cost: Double,
+        odoKm: Int,
+        location: String,
+        vehicleId: String = VehicleStore.activeVehicleId.value,
+    ) {
+        val prevOdo = db.odometer(vehicleId)
         val f = FuelFillup(sid = OpenDashDb.newSid(), dateMs = System.currentTimeMillis(),
-            litres = litres, cost = cost, odometerKm = odoKm, location = location)
+            litres = litres, cost = cost, odometerKm = odoKm, location = location, vehicleId = vehicleId)
         db.upsertFuel(f); pushFuel(f)
-        if (odoKm > prevOdo) { db.setOdometer(odoKm); pushOdometer(odoKm) }
+        if (odoKm > prevOdo) { db.setOdometer(odoKm, vehicleId); pushOdometer(odoKm, vehicleId) }
         bump()
     }
     fun deleteFuel(f: FuelFillup) { db.deleteFuelBySid(f.sid); userDoc()?.collection("fuel")?.document(f.sid)?.delete(); bump() }
 
-    fun addExpense(category: String, amount: Double, note: String) {
+    fun addExpense(
+        category: String,
+        amount: Double,
+        note: String,
+        dateMs: Long = System.currentTimeMillis(),
+        vehicleId: String = VehicleStore.activeVehicleId.value,
+    ) {
         val e = Expense(
             sid = OpenDashDb.newSid(),
-            dateMs = System.currentTimeMillis(),
+            dateMs = dateMs,
             category = category,
             amount = amount,
             note = note,
+            vehicleId = vehicleId,
         )
         db.upsertExpense(e); pushExpense(e); bump()
     }
+    fun upsertExpense(e: Expense) {
+        db.upsertExpense(e)
+        pushExpense(e)
+        bump()
+    }
     fun deleteExpense(e: Expense) { db.deleteExpenseBySid(e.sid); userDoc()?.collection("expenses")?.document(e.sid)?.delete(); bump() }
 
-    fun addMaintenance(name: String, icon: String, intervalKm: Int, lastDoneOdoKm: Int) {
+    fun addMaintenance(
+        name: String,
+        icon: String,
+        intervalKm: Int,
+        lastDoneOdoKm: Int,
+        vehicleId: String = VehicleStore.activeVehicleId.value,
+    ) {
         val m = MaintenanceItem(sid = OpenDashDb.newSid(), name = name, iconKey = icon,
-            intervalKm = intervalKm, lastDoneOdoKm = lastDoneOdoKm, lastDoneDateMs = System.currentTimeMillis())
+            intervalKm = intervalKm, lastDoneOdoKm = lastDoneOdoKm,
+            lastDoneDateMs = System.currentTimeMillis(), vehicleId = vehicleId)
         db.upsertMaintenance(m); pushMaintenance(m); bump()
     }
     fun markServiceDone(m: MaintenanceItem, odoKm: Int) {
-        val u = m.copy(lastDoneOdoKm = odoKm, lastDoneDateMs = System.currentTimeMillis())
+        logService(m, odoKm, m.intervalKm)
+    }
+    fun logService(m: MaintenanceItem, odoKm: Int, intervalKm: Int) {
+        val u = m.copy(
+            intervalKm = intervalKm,
+            lastDoneOdoKm = odoKm,
+            lastDoneDateMs = System.currentTimeMillis(),
+        )
         db.upsertMaintenance(u); pushMaintenance(u); bump()
     }
     fun deleteMaintenance(m: MaintenanceItem) { db.deleteMaintenanceBySid(m.sid); userDoc()?.collection("maintenance")?.document(m.sid)?.delete(); bump() }
@@ -112,19 +150,25 @@ class SyncRepository private constructor(context: Context) {
     fun deleteRide(r: Ride) { db.deleteRideBySid(r.sid); userDoc()?.collection("rides")?.document(r.sid)?.delete(); bump() }
 
     // ── Firestore push helpers ───────────────────────────────────────────
-    private fun pushOdometer(km: Int) { userDoc()?.collection("state")?.document("bike")?.set(mapOf("odometerKm" to km)) }
+    private fun pushOdometer(km: Int, vehicleId: String) {
+        userDoc()?.collection("state")?.document("bike-$vehicleId")
+            ?.set(mapOf("odometerKm" to km, "vehicleId" to vehicleId))
+    }
     private fun pushFuel(f: FuelFillup) {
         userDoc()?.collection("fuel")?.document(f.sid)?.set(
-            mapOf("dateMs" to f.dateMs, "litres" to f.litres, "cost" to f.cost, "odometerKm" to f.odometerKm, "location" to f.location))
+            mapOf("dateMs" to f.dateMs, "litres" to f.litres, "cost" to f.cost, "odometerKm" to f.odometerKm,
+                "location" to f.location, "vehicleId" to f.vehicleId))
     }
     private fun pushMaintenance(m: MaintenanceItem) {
         userDoc()?.collection("maintenance")?.document(m.sid)?.set(
             mapOf("name" to m.name, "iconKey" to m.iconKey, "intervalKm" to m.intervalKm,
-                "lastDoneOdoKm" to m.lastDoneOdoKm, "lastDoneDateMs" to m.lastDoneDateMs))
+                "lastDoneOdoKm" to m.lastDoneOdoKm, "lastDoneDateMs" to m.lastDoneDateMs,
+                "vehicleId" to m.vehicleId))
     }
     private fun pushExpense(e: Expense) {
         userDoc()?.collection("expenses")?.document(e.sid)?.set(
-            mapOf("dateMs" to e.dateMs, "category" to e.category, "amount" to e.amount, "note" to e.note))
+            mapOf("dateMs" to e.dateMs, "category" to e.category, "amount" to e.amount,
+                "note" to e.note, "vehicleId" to e.vehicleId))
     }
     private fun pushSaved(s: SavedLocation) {
         userDoc()?.collection("saved")?.document(s.sid)?.set(
@@ -138,6 +182,31 @@ class SyncRepository private constructor(context: Context) {
                 "endLat" to r.endLat, "endLng" to r.endLng))
     }
 
+    fun pushProfileSettings() {
+        val u = userDoc() ?: return
+        pushVehicleSettings(u)
+    }
+
+    private fun pushVehicleSettings(u: DocumentReference) {
+        val snapshot = VehicleStore.snapshot()
+        u.collection("settings").document("vehicles").set(
+            mapOf(
+                "activeVehicleId" to snapshot.activeVehicleId,
+                "updatedMs" to System.currentTimeMillis(),
+                "vehicles" to snapshot.vehicles.map { vehicle ->
+                    mapOf(
+                        "id" to vehicle.id,
+                        "title" to vehicle.title,
+                        "nickname" to vehicle.nickname,
+                        "puc" to vehicle.puc,
+                        "insurance" to vehicle.insurance,
+                        "service" to vehicle.service,
+                    )
+                },
+            ),
+        )
+    }
+
     // ── Sync lifecycle ───────────────────────────────────────────────────
     fun startSync() {
         val u = userDoc() ?: return
@@ -145,28 +214,22 @@ class SyncRepository private constructor(context: Context) {
         DebugLog.i(TAG) { "startSync for uid=${auth?.currentUser?.uid}" }
 
         listen(u.collection("fuel"),
-            uploadLocal = { db.fuelFills().forEach { pushFuel(it) } },
-            apply = { doc -> db.upsertFuel(FuelFillup(
-                sid = doc.id, dateMs = doc.getLong("dateMs") ?: 0L, litres = doc.getDouble("litres") ?: 0.0,
-                cost = doc.getDouble("cost") ?: 0.0, odometerKm = (doc.getLong("odometerKm") ?: 0L).toInt(),
-                location = doc.getString("location") ?: "")) },
+            uploadLocal = { VehicleStore.vehicles.value.flatMap { db.fuelFills(it.id) }.forEach { pushFuel(it) } },
+            apply = { doc -> db.upsertFuel(remoteFuelFillup(doc.id, doc.data.orEmpty())) },
             remove = { db.deleteFuelBySid(it) })
 
         listen(u.collection("maintenance"),
-            uploadLocal = { db.maintenanceItems().forEach { pushMaintenance(it) } },
+            uploadLocal = { VehicleStore.vehicles.value.flatMap { db.maintenanceItems(it.id) }.forEach { pushMaintenance(it) } },
             apply = { doc -> db.upsertMaintenance(MaintenanceItem(
                 sid = doc.id, name = doc.getString("name") ?: "", iconKey = doc.getString("iconKey") ?: "wrench",
                 intervalKm = (doc.getLong("intervalKm") ?: 0L).toInt(), lastDoneOdoKm = (doc.getLong("lastDoneOdoKm") ?: 0L).toInt(),
-                lastDoneDateMs = doc.getLong("lastDoneDateMs") ?: 0L)) },
+                lastDoneDateMs = doc.getLong("lastDoneDateMs") ?: 0L,
+                vehicleId = doc.getString("vehicleId") ?: VehicleStore.DEFAULT_VEHICLE_ID)) },
             remove = { db.deleteMaintenanceBySid(it) })
 
         listen(u.collection("expenses"),
-            uploadLocal = { db.expenses().forEach { pushExpense(it) } },
-            apply = { doc -> db.upsertExpense(Expense(
-                sid = doc.id, dateMs = doc.getLong("dateMs") ?: 0L,
-                category = doc.getString("category") ?: "Others",
-                amount = doc.getDouble("amount") ?: 0.0,
-                note = doc.getString("note") ?: "")) },
+            uploadLocal = { VehicleStore.vehicles.value.flatMap { db.expenses(it.id) }.forEach { pushExpense(it) } },
+            apply = { doc -> db.upsertExpense(remoteExpense(doc.id, doc.data.orEmpty())) },
             remove = { db.deleteExpenseBySid(it) })
 
         listen(u.collection("saved"),
@@ -189,12 +252,19 @@ class SyncRepository private constructor(context: Context) {
             remove = { db.deleteRideBySid(it) })
 
         // Odometer: single doc. Pull if present, else seed the cloud from local.
-        regs += u.collection("state").document("bike").addSnapshotListener { snap, _ ->
+        val activeVehicleId = VehicleStore.activeVehicleId.value
+        regs += u.collection("state").document("bike-$activeVehicleId").addSnapshotListener { snap, _ ->
             io.launch {
                 val km = snap?.getLong("odometerKm")?.toInt()
-                if (km != null) { db.setOdometer(km); bump() } else pushOdometer(db.odometer())
+                if (km != null) {
+                    db.setOdometer(km, activeVehicleId); bump()
+                } else {
+                    pushOdometer(db.odometer(activeVehicleId), activeVehicleId)
+                }
             }
         }
+
+        syncProfileSettings(u)
     }
 
     fun stopSync() { regs.forEach { it.remove() }; regs.clear() }
@@ -220,4 +290,116 @@ class SyncRepository private constructor(context: Context) {
             }
         }
     }
+
+    private fun syncProfileSettings(u: DocumentReference) {
+        listenSettingsDoc(
+            doc = u.collection("settings").document("vehicles"),
+            pushLocal = { pushVehicleSettings(u) },
+            applyRemote = ::applyVehicleSettings,
+        )
 }
+
+    private fun listenSettingsDoc(
+        doc: DocumentReference,
+        pushLocal: () -> Unit,
+        applyRemote: (DocumentSnapshot) -> Unit,
+    ) {
+        doc.get().addOnSuccessListener { snap ->
+            if (!snap.exists()) io.launch { pushLocal() }
+        }
+        regs += doc.addSnapshotListener { snap, err ->
+            if (err != null || snap?.exists() != true) return@addSnapshotListener
+            io.launch {
+                applyRemote(snap)
+                bump()
+            }
+        }
+    }
+
+    private fun applyVehicleSettings(doc: DocumentSnapshot) {
+        val vehicles = (doc.get("vehicles") as? List<*>)?.mapNotNull { raw ->
+            val map = raw as? Map<*, *> ?: return@mapNotNull null
+            VehicleProfile(
+                id = map.string("id").ifBlank { return@mapNotNull null },
+                title = map.string("title").ifBlank { "Motorcycle" },
+                nickname = map.string("nickname"),
+                puc = map.string("puc").ifBlank { "Not set" },
+                insurance = map.string("insurance").ifBlank { "Not set" },
+                service = map.string("service").ifBlank { "Not set" },
+            )
+        }.orEmpty()
+        if (vehicles.isEmpty()) return
+        VehicleStore.applySnapshot(
+            appContext,
+            VehicleStoreSnapshot(
+                vehicles = vehicles,
+                activeVehicleId = doc.getString("activeVehicleId") ?: vehicles.first().id,
+            ),
+        )
+    }
+private fun Map<*, *>.string(key: String): String =
+        (this[key] as? String).orEmpty()
+
+    private fun Map<*, *>.long(key: String): Long? =
+        when (val value = this[key]) {
+            is Long -> value
+            is Int -> value.toLong()
+            is Double -> value.toLong()
+            else -> null
+        }
+
+    private fun Map<*, *>.double(key: String): Double? =
+        when (val value = this[key]) {
+            is Double -> value
+            is Float -> value.toDouble()
+            is Long -> value.toDouble()
+            is Int -> value.toDouble()
+            else -> null
+        }
+
+    private fun Map<*, *>.boolean(key: String): Boolean? =
+        this[key] as? Boolean
+}
+
+internal fun remoteFuelFillup(sid: String, fields: Map<String, Any?>): FuelFillup =
+    FuelFillup(
+        sid = sid,
+        dateMs = fields.fieldLong("dateMs") ?: 0L,
+        litres = fields.fieldDouble("litres") ?: 0.0,
+        cost = fields.fieldDouble("cost") ?: 0.0,
+        odometerKm = (fields.fieldLong("odometerKm") ?: 0L).toInt(),
+        location = fields.fieldString("location"),
+        vehicleId = fields.fieldString("vehicleId").ifBlank { VehicleStore.DEFAULT_VEHICLE_ID },
+    )
+
+internal fun remoteExpense(sid: String, fields: Map<String, Any?>): Expense =
+    Expense(
+        sid = sid,
+        dateMs = fields.fieldLong("dateMs") ?: 0L,
+        category = fields.fieldString("category").ifBlank { "Others" },
+        amount = fields.fieldDouble("amount") ?: 0.0,
+        note = fields.fieldString("note"),
+        vehicleId = fields.fieldString("vehicleId").ifBlank { VehicleStore.DEFAULT_VEHICLE_ID },
+    )
+
+
+private fun Map<*, *>.fieldString(key: String): String =
+    (this[key] as? String).orEmpty()
+
+private fun Map<*, *>.fieldLong(key: String): Long? =
+    when (val value = this[key]) {
+        is Long -> value
+        is Int -> value.toLong()
+        is Double -> value.toLong()
+        else -> null
+    }
+
+private fun Map<*, *>.fieldDouble(key: String): Double? =
+    when (val value = this[key]) {
+        is Double -> value
+        is Float -> value.toDouble()
+        is Long -> value.toDouble()
+        is Int -> value.toDouble()
+        else -> null
+    }
+

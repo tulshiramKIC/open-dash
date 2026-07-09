@@ -15,8 +15,8 @@ import java.util.UUID
  * applies remote changes back via the upsert / delete-by-sid methods. All calls are
  * synchronous; callers run them off the main thread.
  */
-class OpenDashDb private constructor(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "opendash.db", null, 5) {
+class OpenDashDb internal constructor(context: Context, name: String = "opendash.db") :
+    SQLiteOpenHelper(context.applicationContext, name, null, 7) {
 
     companion object {
         @Volatile private var instance: OpenDashDb? = null
@@ -50,7 +50,8 @@ class OpenDashDb private constructor(context: Context) :
                  date_ms INTEGER NOT NULL,
                  category TEXT NOT NULL,
                  amount REAL NOT NULL,
-                 note TEXT NOT NULL DEFAULT '')"""
+                 note TEXT NOT NULL DEFAULT '',
+                 vehicle_id TEXT NOT NULL DEFAULT 'default')"""
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -62,7 +63,8 @@ class OpenDashDb private constructor(context: Context) :
                  litres REAL NOT NULL,
                  cost REAL NOT NULL,
                  odometer_km INTEGER NOT NULL,
-                 location TEXT NOT NULL DEFAULT '')"""
+                 location TEXT NOT NULL DEFAULT '',
+                 vehicle_id TEXT NOT NULL DEFAULT 'default')"""
         )
         db.execSQL(
             """CREATE TABLE maintenance_item(
@@ -72,10 +74,13 @@ class OpenDashDb private constructor(context: Context) :
                  icon_key TEXT NOT NULL,
                  interval_km INTEGER NOT NULL,
                  last_done_odo_km INTEGER NOT NULL,
-                 last_done_date_ms INTEGER NOT NULL)"""
+                 last_done_date_ms INTEGER NOT NULL,
+                 vehicle_id TEXT NOT NULL DEFAULT 'default')"""
         )
         db.execSQL("CREATE TABLE bike_state(id INTEGER PRIMARY KEY, odometer_km INTEGER NOT NULL)")
         db.execSQL("INSERT INTO bike_state(id, odometer_km) VALUES (0, $DEFAULT_ODOMETER)")
+        db.execSQL("CREATE TABLE vehicle_state(vehicle_id TEXT PRIMARY KEY, odometer_km INTEGER NOT NULL)")
+        db.execSQL("INSERT INTO vehicle_state(vehicle_id, odometer_km) VALUES ('default', $DEFAULT_ODOMETER)")
         db.execSQL(
             """CREATE TABLE saved_location(
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,53 +116,108 @@ class OpenDashDb private constructor(context: Context) :
         }
         if (oldVersion < 4) db.execSQL(CREATE_RIDE)
         if (oldVersion < 5) db.execSQL(CREATE_EXPENSE)
+        if (oldVersion < 6) {
+            for (table in listOf("fuel_fillup", "maintenance_item", "expense")) {
+                runCatching {
+                    db.execSQL("ALTER TABLE $table ADD COLUMN vehicle_id TEXT NOT NULL DEFAULT 'default'")
+                }
+            }
+            db.execSQL("CREATE TABLE IF NOT EXISTS vehicle_state(vehicle_id TEXT PRIMARY KEY, odometer_km INTEGER NOT NULL)")
+            db.execSQL(
+                "INSERT OR IGNORE INTO vehicle_state(vehicle_id, odometer_km) " +
+                    "SELECT 'default', odometer_km FROM bike_state WHERE id=0"
+            )
+            db.execSQL("UPDATE maintenance_item SET name='Chain sprocket' WHERE sid='seed-chain'")
+            db.execSQL("UPDATE maintenance_item SET name='Brake pads - front' WHERE sid='seed-brakes'")
+            seedMaintenanceForVehicle(db, VehicleStore.DEFAULT_VEHICLE_ID)
+        }
+        if (oldVersion < 7) {
+            // Correct only untouched legacy defaults. User-edited intervals remain unchanged.
+            db.execSQL("UPDATE maintenance_item SET interval_km=10000 WHERE vehicle_id='default' AND sid='seed-oil' AND interval_km=5000")
+            db.execSQL("UPDATE maintenance_item SET interval_km=10000 WHERE vehicle_id='default' AND sid='seed-oilfilter' AND interval_km=5000")
+            db.execSQL("UPDATE maintenance_item SET interval_km=10000 WHERE vehicle_id='default' AND sid='seed-airfilter' AND interval_km=8000")
+            db.execSQL("UPDATE maintenance_item SET interval_km=10000 WHERE vehicle_id='default' AND sid IN ('seed-brakes','seed-brakes-rear') AND interval_km=6000")
+            db.execSQL("UPDATE maintenance_item SET interval_km=10000 WHERE vehicle_id='default' AND sid IN ('seed-front-tyre','seed-rear-tyre') AND interval_km=15000")
+            db.execSQL("UPDATE maintenance_item SET name='Drive chain', interval_km=500 WHERE vehicle_id='default' AND sid='seed-chain' AND interval_km=15000")
+        }
     }
 
     private fun seedMaintenance(db: SQLiteDatabase) {
+        seedMaintenanceForVehicle(db, VehicleStore.DEFAULT_VEHICLE_ID)
+    }
+
+    private fun seedMaintenanceForVehicle(db: SQLiteDatabase, vehicleId: String) {
+        // The bundled schedule is sourced specifically for the default Himalayan 450.
+        // Other vehicles remain empty until the rider adds model-appropriate intervals.
+        if (vehicleId != VehicleStore.DEFAULT_VEHICLE_ID) return
         val now = System.currentTimeMillis()
         // DETERMINISTIC sids: every fresh install seeds the same ids, so when two devices
         // sync these dedupe (upsert by sid) instead of producing duplicates.
         data class Seed(val sid: String, val name: String, val icon: String, val interval: Int)
         val seeds = listOf(
-            Seed("seed-chain", "Chain clean & lube", "chain", 500),
-            Seed("seed-oil", "Engine oil", "drop", 5000),
-            Seed("seed-airfilter", "Air filter", "wrench", 8000),
-            Seed("seed-brakes", "Brake pads (front)", "gauge", 6000),
-            Seed("seed-coolant", "Coolant", "thermo", 12000),
+            Seed("seed-oil", "Engine oil", "drop", 10000),
+            Seed("seed-oilfilter", "Oil filter", "fuel", 10000),
+            Seed("seed-brakes", "Brake pads - front", "gauge", 10000),
+            Seed("seed-brakes-rear", "Brake pads - rear", "gauge", 10000),
+            Seed("seed-front-tyre", "Front tyre", "gauge", 10000),
+            Seed("seed-rear-tyre", "Rear tyre", "gauge", 10000),
+            Seed("seed-airfilter", "Air filter", "wrench", 10000),
+            Seed("seed-chain", "Drive chain", "chain", 500),
         )
         for (s in seeds) {
-            db.insert("maintenance_item", null, ContentValues().apply {
-                put("sid", s.sid)
+            val sid = if (vehicleId == VehicleStore.DEFAULT_VEHICLE_ID) s.sid else "$vehicleId-${s.sid}"
+            db.insertWithOnConflict("maintenance_item", null, ContentValues().apply {
+                put("sid", sid)
                 put("name", s.name)
                 put("icon_key", s.icon)
                 put("interval_km", s.interval)
                 put("last_done_odo_km", 0)
                 put("last_done_date_ms", now)
-            })
+                put("vehicle_id", vehicleId)
+            }, SQLiteDatabase.CONFLICT_IGNORE)
         }
+    }
+
+    fun ensureMaintenanceForVehicle(vehicleId: String) {
+        seedMaintenanceForVehicle(writableDatabase, vehicleId)
     }
 
     // ── Odometer (synced as a single doc) ──────────────────────────────────
-    fun odometer(): Int =
-        readableDatabase.rawQuery("SELECT odometer_km FROM bike_state WHERE id=0", null).use {
-            if (it.moveToFirst()) it.getInt(0) else DEFAULT_ODOMETER
-        }
+    fun odometer(vehicleId: String = VehicleStore.DEFAULT_VEHICLE_ID): Int {
+        val stored = readableDatabase.rawQuery(
+            "SELECT odometer_km FROM vehicle_state WHERE vehicle_id=?",
+            arrayOf(vehicleId),
+        ).use { if (it.moveToFirst()) it.getInt(0) else null }
+        if (stored != null) return stored
+        val fuelOdo = readableDatabase.rawQuery(
+            "SELECT MAX(odometer_km) FROM fuel_fillup WHERE vehicle_id=?",
+            arrayOf(vehicleId),
+        ).use { if (it.moveToFirst() && !it.isNull(0)) it.getInt(0) else 0 }
+        setOdometer(fuelOdo, vehicleId)
+        return fuelOdo
+    }
 
-    fun setOdometer(km: Int) {
-        writableDatabase.update("bike_state", ContentValues().apply { put("odometer_km", km) }, "id=0", null)
+    fun setOdometer(km: Int, vehicleId: String = VehicleStore.DEFAULT_VEHICLE_ID) {
+        writableDatabase.insertWithOnConflict(
+            "vehicle_state",
+            null,
+            ContentValues().apply { put("vehicle_id", vehicleId); put("odometer_km", km) },
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
     }
 
     // ── Fuel ──────────────────────────────────────────────────────────────
-    fun fuelFills(): List<FuelFillup> {
+    fun fuelFills(vehicleId: String = VehicleStore.DEFAULT_VEHICLE_ID): List<FuelFillup> {
         val out = ArrayList<FuelFillup>()
         readableDatabase.rawQuery(
-            "SELECT id,sid,date_ms,litres,cost,odometer_km,location FROM fuel_fillup " +
-                "ORDER BY odometer_km DESC, date_ms DESC", null,
+            "SELECT id,sid,date_ms,litres,cost,odometer_km,location,vehicle_id FROM fuel_fillup " +
+                "WHERE vehicle_id=? ORDER BY odometer_km DESC, date_ms DESC", arrayOf(vehicleId),
         ).use { c ->
             while (c.moveToNext()) out.add(
                 FuelFillup(
                     id = c.getLong(0), sid = c.getString(1), dateMs = c.getLong(2), litres = c.getDouble(3),
                     cost = c.getDouble(4), odometerKm = c.getInt(5), location = c.getString(6) ?: "",
+                    vehicleId = c.getString(7) ?: VehicleStore.DEFAULT_VEHICLE_ID,
                 )
             )
         }
@@ -169,6 +229,7 @@ class OpenDashDb private constructor(context: Context) :
         val cv = ContentValues().apply {
             put("sid", f.sid); put("date_ms", f.dateMs); put("litres", f.litres)
             put("cost", f.cost); put("odometer_km", f.odometerKm); put("location", f.location)
+            put("vehicle_id", f.vehicleId)
         }
         if (writableDatabase.update("fuel_fillup", cv, "sid=?", arrayOf(f.sid)) == 0)
             writableDatabase.insert("fuel_fillup", null, cv)
@@ -178,15 +239,17 @@ class OpenDashDb private constructor(context: Context) :
         writableDatabase.delete("fuel_fillup", "sid=?", arrayOf(sid))
 
     // ── Expenses ─────────────────────────────────────────────────────────
-    fun expenses(): List<Expense> {
+    fun expenses(vehicleId: String = VehicleStore.DEFAULT_VEHICLE_ID): List<Expense> {
         val out = ArrayList<Expense>()
         readableDatabase.rawQuery(
-            "SELECT id,sid,date_ms,category,amount,note FROM expense ORDER BY date_ms DESC", null,
+            "SELECT id,sid,date_ms,category,amount,note,vehicle_id FROM expense " +
+                "WHERE vehicle_id=? ORDER BY date_ms DESC", arrayOf(vehicleId),
         ).use { c ->
             while (c.moveToNext()) out.add(
                 Expense(
                     id = c.getLong(0), sid = c.getString(1), dateMs = c.getLong(2),
                     category = c.getString(3), amount = c.getDouble(4), note = c.getString(5) ?: "",
+                    vehicleId = c.getString(6) ?: VehicleStore.DEFAULT_VEHICLE_ID,
                 )
             )
         }
@@ -197,6 +260,7 @@ class OpenDashDb private constructor(context: Context) :
         val cv = ContentValues().apply {
             put("sid", e.sid); put("date_ms", e.dateMs); put("category", e.category)
             put("amount", e.amount); put("note", e.note)
+            put("vehicle_id", e.vehicleId)
         }
         if (writableDatabase.update("expense", cv, "sid=?", arrayOf(e.sid)) == 0)
             writableDatabase.insert("expense", null, cv)
@@ -206,30 +270,54 @@ class OpenDashDb private constructor(context: Context) :
         writableDatabase.delete("expense", "sid=?", arrayOf(sid))
 
     // ── Maintenance ───────────────────────────────────────────────────────
-    fun maintenanceItems(): List<MaintenanceItem> {
+    fun maintenanceItems(vehicleId: String = VehicleStore.DEFAULT_VEHICLE_ID): List<MaintenanceItem> {
         val out = ArrayList<MaintenanceItem>()
         readableDatabase.rawQuery(
-            "SELECT id,sid,name,icon_key,interval_km,last_done_odo_km,last_done_date_ms " +
-                "FROM maintenance_item ORDER BY id ASC", null,
+            "SELECT id,sid,name,icon_key,interval_km,last_done_odo_km,last_done_date_ms,vehicle_id " +
+                "FROM maintenance_item WHERE vehicle_id=? ORDER BY id ASC", arrayOf(vehicleId),
         ).use { c ->
             while (c.moveToNext()) out.add(
                 MaintenanceItem(
                     id = c.getLong(0), sid = c.getString(1), name = c.getString(2), iconKey = c.getString(3),
                     intervalKm = c.getInt(4), lastDoneOdoKm = c.getInt(5), lastDoneDateMs = c.getLong(6),
+                    vehicleId = c.getString(7) ?: VehicleStore.DEFAULT_VEHICLE_ID,
                 )
             )
         }
         return out
+            .groupBy { it.name.trim().lowercase() }
+            .values
+            .map { duplicates ->
+                duplicates.maxWithOrNull(
+                    compareBy<MaintenanceItem> { it.lastDoneOdoKm }
+                        .thenBy { it.lastDoneDateMs },
+                ) ?: duplicates.first()
+            }
     }
 
     fun upsertMaintenance(m: MaintenanceItem) {
+        val item = normalizeOfficialDefault(m)
         val cv = ContentValues().apply {
-            put("sid", m.sid); put("name", m.name); put("icon_key", m.iconKey)
-            put("interval_km", m.intervalKm); put("last_done_odo_km", m.lastDoneOdoKm)
-            put("last_done_date_ms", m.lastDoneDateMs)
+            put("sid", item.sid); put("name", item.name); put("icon_key", item.iconKey)
+            put("interval_km", item.intervalKm); put("last_done_odo_km", item.lastDoneOdoKm)
+            put("last_done_date_ms", item.lastDoneDateMs)
+            put("vehicle_id", item.vehicleId)
         }
-        if (writableDatabase.update("maintenance_item", cv, "sid=?", arrayOf(m.sid)) == 0)
+        if (writableDatabase.update("maintenance_item", cv, "sid=?", arrayOf(item.sid)) == 0)
             writableDatabase.insert("maintenance_item", null, cv)
+    }
+
+    private fun normalizeOfficialDefault(item: MaintenanceItem): MaintenanceItem {
+        if (item.vehicleId != VehicleStore.DEFAULT_VEHICLE_ID) return item
+        return when {
+            item.sid == "seed-oil" && item.intervalKm == 5000 -> item.copy(intervalKm = 10000)
+            item.sid == "seed-oilfilter" && item.intervalKm == 5000 -> item.copy(intervalKm = 10000)
+            item.sid == "seed-airfilter" && item.intervalKm == 8000 -> item.copy(intervalKm = 10000)
+            item.sid in setOf("seed-brakes", "seed-brakes-rear") && item.intervalKm == 6000 -> item.copy(intervalKm = 10000)
+            item.sid in setOf("seed-front-tyre", "seed-rear-tyre") && item.intervalKm == 15000 -> item.copy(intervalKm = 10000)
+            item.sid == "seed-chain" && item.intervalKm == 15000 -> item.copy(name = "Drive chain", intervalKm = 500)
+            else -> item
+        }
     }
 
     fun deleteMaintenanceBySid(sid: String) =
