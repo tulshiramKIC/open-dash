@@ -14,17 +14,25 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -36,38 +44,23 @@ import com.example.opendash.ui.components.OpenDashBtn
 import com.example.opendash.ui.components.OpenDashCard
 import com.example.opendash.ui.components.OpenDashDivider
 import com.example.opendash.ui.components.OpenDashIconBtn
+import com.example.opendash.ui.components.OpenDashChip
+import com.example.opendash.ui.components.ChipTone
 import com.example.opendash.ui.components.ScreenHeader
+import com.example.opendash.data.VehicleProfile
+import com.example.opendash.data.VehicleStore
 import com.example.opendash.ui.theme.Alert
 import com.example.opendash.ui.theme.GeistFamily
-import com.example.opendash.ui.theme.Gold
-import com.example.opendash.ui.theme.TextHi
-import com.example.opendash.ui.theme.TextLo
-import com.example.opendash.ui.theme.TextMid
-
-private data class VehicleProfile(
-    val title: String,
-    val nickname: String,
-    val puc: String,
-    val insurance: String,
-    val service: String,
-)
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun VehiclesScreen() {
-    var vehicles by remember {
-        mutableStateOf(
-            listOf(
-                VehicleProfile(
-                    title = "Himalayan 450",
-                    nickname = "Default vehicle",
-                    puc = "Not set",
-                    insurance = "Not set",
-                    service = "Not set",
-                ),
-            ),
-        )
-    }
-    var editingIndex by remember { mutableStateOf<Int?>(null) }
+    val context = LocalContext.current
+    val vehicles by VehicleStore.vehicles.collectAsState()
+    val activeVehicleId by VehicleStore.activeVehicleId.collectAsState()
+    var editingVehicleId by remember { mutableStateOf<String?>(null) }
     var addingVehicle by remember { mutableStateOf(false) }
 
     Column(
@@ -85,7 +78,9 @@ fun VehiclesScreen() {
                 if (index > 0) OpenDashDivider(Modifier.padding(vertical = 14.dp))
                 VehicleBlock(
                     vehicle = vehicle,
-                    onEdit = { editingIndex = index },
+                    active = vehicle.id == activeVehicleId,
+                    onSelect = { VehicleStore.select(context, vehicle.id) },
+                    onEdit = { editingVehicleId = vehicle.id },
                 )
             }
         }
@@ -101,14 +96,15 @@ fun VehiclesScreen() {
         )
     }
 
-    editingIndex?.let { index ->
+    editingVehicleId?.let { vehicleId ->
+        val vehicle = vehicles.firstOrNull { it.id == vehicleId } ?: return@let
         EditVehicleDialog(
             dialogTitle = "Edit vehicle",
-            vehicle = vehicles[index],
-            onDismiss = { editingIndex = null },
+            vehicle = vehicle,
+            onDismiss = { editingVehicleId = null },
             onSave = { updated ->
-                vehicles = vehicles.toMutableList().also { it[index] = updated }
-                editingIndex = null
+                VehicleStore.update(context, updated)
+                editingVehicleId = null
             },
         )
     }
@@ -117,6 +113,7 @@ fun VehiclesScreen() {
         EditVehicleDialog(
             dialogTitle = "Add vehicle",
             vehicle = VehicleProfile(
+                id = "",
                 title = "",
                 nickname = "",
                 puc = "Not set",
@@ -125,7 +122,7 @@ fun VehiclesScreen() {
             ),
             onDismiss = { addingVehicle = false },
             onSave = { updated ->
-                vehicles = vehicles + updated
+                VehicleStore.add(context, updated)
                 addingVehicle = false
             },
         )
@@ -136,7 +133,7 @@ fun VehiclesScreen() {
 private fun SectionTitle(label: String) {
     Text(
         label,
-        color = TextHi,
+        color = MaterialTheme.colorScheme.onBackground,
         fontSize = 18.sp,
         fontWeight = FontWeight.Medium,
         fontFamily = GeistFamily,
@@ -145,17 +142,34 @@ private fun SectionTitle(label: String) {
 }
 
 @Composable
-private fun VehicleBlock(vehicle: VehicleProfile, onEdit: () -> Unit) {
+private fun VehicleBlock(
+    vehicle: VehicleProfile,
+    active: Boolean,
+    onSelect: () -> Unit,
+    onEdit: () -> Unit,
+) {
     Row(verticalAlignment = Alignment.Top) {
-        Icon(OpenDashIcons.Motor, contentDescription = null, tint = TextMid, modifier = Modifier.size(30.dp).padding(top = 5.dp))
+        Icon(OpenDashIcons.Motor, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(30.dp).padding(top = 5.dp))
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(vehicle.title, color = Gold, fontSize = 16.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
-            if (vehicle.nickname.isNotBlank()) Text(vehicle.nickname, color = TextMid, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+            Text(vehicle.title, color = MaterialTheme.colorScheme.primary, fontSize = 16.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
+            if (vehicle.nickname.isNotBlank()) Text(vehicle.nickname, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
             Spacer(Modifier.height(14.dp))
             VehicleMeta("PUC", vehicle.puc, alert = vehicle.puc.isProblemValue())
             VehicleMeta("Insurance", vehicle.insurance, alert = vehicle.insurance.isProblemValue())
             VehicleMeta("Service", vehicle.service)
+            Spacer(Modifier.height(12.dp))
+            if (active) {
+                OpenDashChip("Current vehicle", ChipTone.Gold, icon = OpenDashIcons.Check)
+            } else {
+                OpenDashBtn(
+                    "Set current",
+                    onClick = onSelect,
+                    icon = OpenDashIcons.Check,
+                    variant = BtnVariant.Secondary,
+                    size = BtnSize.Sm,
+                )
+            }
         }
         OpenDashIconBtn(OpenDashIcons.Edit, onClick = onEdit, size = 34.dp)
     }
@@ -164,13 +178,14 @@ private fun VehicleBlock(vehicle: VehicleProfile, onEdit: () -> Unit) {
 @Composable
 private fun VehicleMeta(label: String, value: String, alert: Boolean = false) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-        Text(label, color = TextLo, fontSize = 13.sp, modifier = Modifier.width(90.dp))
-        Text(":", color = TextLo, fontSize = 13.sp)
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.width(90.dp))
+        Text(":", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         Spacer(Modifier.width(8.dp))
-        Text(value, color = if (alert) Alert else TextMid, fontSize = 13.sp)
+        Text(value, color = if (alert) Alert else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EditVehicleDialog(
     dialogTitle: String,
@@ -180,41 +195,64 @@ private fun EditVehicleDialog(
 ) {
     var title by remember(vehicle) { mutableStateOf(vehicle.title) }
     var nickname by remember(vehicle) { mutableStateOf(vehicle.nickname) }
-    val initialPuc = remember(vehicle) { vehicle.puc.toVehicleDateParts() }
-    val initialInsurance = remember(vehicle) { vehicle.insurance.toVehicleDateParts() }
-    var pucDay by remember(vehicle) { mutableStateOf(initialPuc.day) }
-    var pucMonth by remember(vehicle) { mutableStateOf(initialPuc.month) }
-    var pucYear by remember(vehicle) { mutableStateOf(initialPuc.year) }
-    var insuranceDay by remember(vehicle) { mutableStateOf(initialInsurance.day) }
-    var insuranceMonth by remember(vehicle) { mutableStateOf(initialInsurance.month) }
-    var insuranceYear by remember(vehicle) { mutableStateOf(initialInsurance.year) }
+    var pucDate by remember(vehicle) { mutableStateOf(vehicle.puc.normalizedVehicleDate()) }
+    var insuranceDate by remember(vehicle) { mutableStateOf(vehicle.insurance.normalizedVehicleDate()) }
+    var editingDate by remember { mutableStateOf<VehicleDateTarget?>(null) }
     var service by remember(vehicle) { mutableStateOf(vehicle.service) }
     val valid = title.isNotBlank()
 
+
+    editingDate?.let { target ->
+        val current = when (target) {
+            VehicleDateTarget.PUC -> pucDate
+            VehicleDateTarget.INSURANCE -> insuranceDate
+        }
+        key(target, current) {
+            val pickerState = rememberDatePickerState(initialSelectedDateMillis = current.toVehicleDateMillis())
+            DatePickerDialog(
+                onDismissRequest = { editingDate = null },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            pickerState.selectedDateMillis?.let { millis ->
+                                when (target) {
+                                    VehicleDateTarget.PUC -> pucDate = formatVehicleDateMillis(millis)
+                                    VehicleDateTarget.INSURANCE -> insuranceDate = formatVehicleDateMillis(millis)
+                                }
+                            }
+                            editingDate = null
+                        },
+                    ) { Text("Done", color = MaterialTheme.colorScheme.primary) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { editingDate = null }) {
+                        Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                },
+            ) {
+                DatePicker(state = pickerState)
+            }
+        }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(dialogTitle, color = TextHi) },
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurface,
+        title = { Text(dialogTitle) },
         text = {
             Column {
                 VehicleTextField(title, { title = it }, "Vehicle name")
                 VehicleTextField(nickname, { nickname = it }, "Nickname")
                 VehicleDateFields(
                     label = "PUC expiry",
-                    day = pucDay,
-                    month = pucMonth,
-                    year = pucYear,
-                    onDay = { pucDay = it.filter { ch -> ch.isDigit() }.take(2) },
-                    onMonth = { pucMonth = it.take(3) },
-                    onYear = { pucYear = it.filter { ch -> ch.isDigit() }.take(4) },
+                    value = pucDate,
+                    onClick = { editingDate = VehicleDateTarget.PUC },
                 )
                 VehicleDateFields(
                     label = "Insurance expiry",
-                    day = insuranceDay,
-                    month = insuranceMonth,
-                    year = insuranceYear,
-                    onDay = { insuranceDay = it.filter { ch -> ch.isDigit() }.take(2) },
-                    onMonth = { insuranceMonth = it.take(3) },
-                    onYear = { insuranceYear = it.filter { ch -> ch.isDigit() }.take(4) },
+                    value = insuranceDate,
+                    onClick = { editingDate = VehicleDateTarget.INSURANCE },
                 )
                 VehicleTextField(service, { service = it }, "Service")
             }
@@ -225,20 +263,21 @@ private fun EditVehicleDialog(
                 onClick = {
                     onSave(
                         VehicleProfile(
+                            id = vehicle.id,
                             title = title.trim(),
                             nickname = nickname.trim(),
-                            puc = formatVehicleDate(pucDay, pucMonth, pucYear),
-                            insurance = formatVehicleDate(insuranceDay, insuranceMonth, insuranceYear),
+                            puc = pucDate,
+                            insurance = insuranceDate,
                             service = service.trim().ifBlank { "Not set" },
                         ),
                     )
                 },
             ) {
-                Text("Save", color = if (valid) Gold else TextLo)
+                Text("Save", color = if (valid) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMid) }
+            TextButton(onClick = onDismiss) { Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         },
     )
 }
@@ -246,19 +285,22 @@ private fun EditVehicleDialog(
 @Composable
 private fun VehicleDateFields(
     label: String,
-    day: String,
-    month: String,
-    year: String,
-    onDay: (String) -> Unit,
-    onMonth: (String) -> Unit,
-    onYear: (String) -> Unit,
+    value: String,
+    onClick: () -> Unit,
 ) {
-    Text(label, color = TextMid, fontSize = 12.5.sp, modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        VehicleTextField(day, onDay, "DD", Modifier.weight(0.8f), KeyboardType.Number)
-        VehicleTextField(month, onMonth, "MMM", Modifier.weight(1.1f), KeyboardType.Text)
-        VehicleTextField(year, onYear, "YYYY", Modifier.weight(1.1f), KeyboardType.Number)
-    }
+    Text(
+        label,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 12.5.sp,
+        modifier = Modifier.padding(top = 12.dp, bottom = 2.dp),
+    )
+    OpenDashBtn(
+        label = value,
+        onClick = onClick,
+        variant = BtnVariant.Secondary,
+        size = BtnSize.Md,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
@@ -282,9 +324,25 @@ private fun VehicleTextField(
 private fun String.isProblemValue(): Boolean =
     equals("expired", ignoreCase = true) || equals("na", ignoreCase = true)
 
+private enum class VehicleDateTarget { PUC, INSURANCE }
+
 private data class VehicleDateParts(val day: String, val month: String, val year: String)
 
 private val vehicleMonths = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+private val vehicleDateFormat = SimpleDateFormat("dd-MMM-yyyy", Locale.getDefault()).apply {
+    isLenient = false
+}
+
+private fun String.normalizedVehicleDate(): String {
+    val parts = toVehicleDateParts()
+    return formatVehicleDate(parts.day, parts.month, parts.year)
+}
+
+private fun String.toVehicleDateMillis(): Long = runCatching {
+    vehicleDateFormat.parse(this)?.time
+}.getOrNull() ?: Date().time
+
+private fun formatVehicleDateMillis(millis: Long): String = vehicleDateFormat.format(Date(millis))
 
 private fun String.toVehicleDateParts(): VehicleDateParts {
     val match = Regex("""(\d{1,2})-([A-Za-z]{3})-(\d{4})""").find(this.trim())

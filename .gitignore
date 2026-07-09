@@ -7,21 +7,17 @@
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+/.idea/
 .DS_Store
+.claude/settings.local.json
 /build
 /captures
 .externalNativeBuild
 .cxx
 local.properties
-
-# Local environment and secrets. Commit .env.example only.
-.env
-.env.*
-!.env.example
-*.properties.local
-gradle.properties.local
-secrets.properties
-app/secrets.properties
+key.properties
+keys.properties
+kays.properties
 
 # Firebase is bring-your-own-project — each user drops in their own (the build runs
 # fully local without it). Never commit the author's config to a public repo.
@@ -34,15 +30,17 @@ app/google-services.json
 *.aab
 *.jks
 *.keystore
-*.p12
-*.pem
-*.key
-*.cer
-*.crt
 *.log
-*.tmp
-captures/
-build/
-app/build/
-**/build/
+firebase-debug.log
+crashlytics-build.properties
 *.hprof
+*.dmp
+*.stacktrace
+crash_exports/
+crash-exports/
+crashlytics/
+captures/
+opendash_expenses_audit.png
+
+# GSD planning docs are local-only for this recovery pass.
+.planning/

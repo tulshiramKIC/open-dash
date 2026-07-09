@@ -10,7 +10,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -25,7 +28,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.opendash.data.FuelFillup
 import com.example.opendash.data.MaintenanceItem
 import com.example.opendash.ui.OpenDashIcons
 import com.example.opendash.ui.components.*
@@ -37,8 +39,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val dfRow = SimpleDateFormat("MMM d", Locale.getDefault())
-private val dfBar = SimpleDateFormat("d/M", Locale.getDefault())
+private val dfHistory = SimpleDateFormat("d MMM yyyy", Locale.getDefault())
 
 private fun iconFor(key: String): ImageVector = when (key) {
     "chain"  -> OpenDashIcons.Chain
@@ -49,21 +50,21 @@ private fun iconFor(key: String): ImageVector = when (key) {
     else     -> OpenDashIcons.Wrench
 }
 
-private fun dueText(remainingKm: Int): String = when {
-    remainingKm < 0  -> "overdue ${-remainingKm} km"
-    else             -> "in ${"%,d".format(remainingKm)} km"
+private fun dueText(row: MaintRow): String {
+    if (row.tone == "alert") return "Overdue"
+    val verb = row.officialSchedule?.action?.verb ?: "Service"
+    return "$verb in ${"%,d".format(row.remainingKm.coerceAtLeast(0))} km"
 }
 
 @Composable
 fun GarageScreen(
-    tab: String,
-    onTabChange: (String) -> Unit,
     vm: GarageViewModel = viewModel(),
 ) {
     val ui by vm.ui.collectAsState()
-    var showFuel by remember { mutableStateOf(false) }
     var showAddService by remember { mutableStateOf(false) }
     var showLog by remember { mutableStateOf(false) }
+    var showOdometer by remember { mutableStateOf(false) }
+    var selectedPart by remember { mutableStateOf<MaintRow?>(null) }
 
     Column(
         modifier = Modifier
@@ -77,8 +78,8 @@ fun GarageScreen(
         OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 14.dp) {
             Eyebrow("Active vehicle")
             Text(
-                "Himalayan 450",
-                color = TextHi,
+                ui.activeVehicleName,
+                color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.SemiBold,
                 fontFamily = GeistFamily,
@@ -86,24 +87,41 @@ fun GarageScreen(
             )
             Text(
                 "${"%,d".format(ui.odometerKm)} km on odometer",
-                color = TextMid,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
 
-        GarageSectionHeader("Maintenance", "Service intervals and completed work")
-        MaintenanceTab(ui, onMark = { item -> vm.markServiceDone(item, ui.odometerKm) }, onLog = { showLog = true }, onAdd = { showAddService = true })
-        Spacer(Modifier.height(24.dp))
-        GarageSectionHeader("Fuel diary", "Efficiency, fill-ups, and 30-day fuel spend")
-        FuelTab(ui, onAdd = { showFuel = true }, onDelete = { vm.deleteFuel(it) })
-    }
+        Spacer(Modifier.height(14.dp))
+        OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 18.dp) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.size(52.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+                ) {
+                    Icon(OpenDashIcons.Gauge, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
+                }
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Latest odometer reading", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    Text(
+                        "${"%,d".format(ui.odometerKm)} km",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = GeistMonoFamily,
+                    )
+                }
+                OpenDashIconBtn(OpenDashIcons.Edit, onClick = { showOdometer = true })
+            }
+        }
 
-    if (showFuel) AddFuelDialog(
-        defaultOdo = ui.odometerKm,
-        onAdd = { l, c, o, loc -> vm.addFuel(l, c, o, loc); showFuel = false },
-        onDismiss = { showFuel = false },
-    )
+        Spacer(Modifier.height(24.dp))
+        MileageSummary(ui.avgKmplLast5)
+        GarageSectionHeader("Spare parts", "Condition and service distance for ${ui.activeVehicleName}")
+        MaintenanceTab(ui, onSelect = { selectedPart = it }, onLog = { showLog = true }, onAdd = { showAddService = true })
+    }
     if (showAddService) AddServiceDialog(
         onAdd = { n, ic, iv -> vm.addService(n, ic, iv); showAddService = false },
         onDismiss = { showAddService = false },
@@ -115,77 +133,94 @@ fun GarageScreen(
         onAddNew = { showLog = false; showAddService = true },
         onDismiss = { showLog = false },
     )
+    if (showOdometer) OdometerDialog(
+        current = ui.odometerKm,
+        onSet = { vm.setOdometer(it); showOdometer = false },
+        onDismiss = { showOdometer = false },
+    )
+    selectedPart?.let { row ->
+        SparePartDetailsSheet(
+            row = row,
+            odometerKm = ui.odometerKm,
+            onLogService = { interval ->
+                vm.logService(row.item, ui.odometerKm, interval)
+                selectedPart = null
+            },
+            onDismiss = { selectedPart = null },
+        )
+    }
+}
+
+@Composable
+private fun MileageSummary(avgKmpl: Double?) {
+    OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 18.dp) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(52.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+            ) {
+                Icon(OpenDashIcons.Fuel, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
+            }
+            Spacer(Modifier.width(16.dp))
+            Column {
+                Text("Avg. mileage of last 5 fuel-ups", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text(
+                    avgKmpl?.let { "%.2f km/l".format(it) } ?: "Not enough fuel data",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = GeistMonoFamily,
+                    modifier = Modifier.padding(top = 3.dp),
+                )
+            }
+        }
+    }
 }
 
 @Composable
 private fun GarageSectionHeader(title: String, subtitle: String) {
     Column(Modifier.padding(top = 22.dp, bottom = 10.dp, start = 2.dp, end = 2.dp)) {
-        Text(title, color = TextHi, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
-        Text(subtitle, color = TextLo, fontSize = 12.5.sp, modifier = Modifier.padding(top = 2.dp))
+        Text(title, color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
+        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
 @Composable
-private fun MaintenanceTab(ui: GarageUi, onMark: (MaintenanceItem) -> Unit, onLog: () -> Unit, onAdd: () -> Unit) {
-    val toneColor = mapOf("ok" to Gold, "warn" to Warn, "alert" to Alert)
-    val hero = ui.maint.minByOrNull { it.remainingKm }
-
-    if (hero != null) {
-        val ridden = (ui.odometerKm - hero.item.lastDoneOdoKm).coerceAtLeast(0)
-        val frac = (ridden.toFloat() / hero.item.intervalKm.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
-        val tone = toneColor[hero.tone] ?: Gold
-        OpenDashCard(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-            Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
-                Column {
-                    Eyebrow("Most urgent")
-                    Text(hero.item.name, color = TextHi, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = GeistFamily, letterSpacing = (-0.36).sp, modifier = Modifier.padding(top = 5.dp))
-                }
-                OpenDashChip(
-                    dueText(hero.remainingKm),
-                    if (hero.tone == "alert") ChipTone.Alert else if (hero.tone == "warn") ChipTone.Warn else ChipTone.Gold,
-                    dot = true,
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text("%,d".format(ridden), color = TextHi, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
-                Spacer(Modifier.width(6.dp))
-                Text("/ ${"%,d".format(hero.item.intervalKm)} km ridden", color = TextLo, fontSize = 13.sp, fontFamily = GeistMonoFamily, modifier = Modifier.padding(bottom = 3.dp))
-            }
-            Spacer(Modifier.height(8.dp))
-            Box(modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape).background(Surf3)) {
-                Box(Modifier.fillMaxWidth(frac).fillMaxHeight().clip(CircleShape).background(Brush.horizontalGradient(listOf(GoldDeep, tone))))
-            }
-            Spacer(Modifier.height(14.dp))
-            OpenDashBtn("Mark done today", onClick = { onMark(hero.item) }, icon = OpenDashIcons.Check, variant = BtnVariant.Primary, size = BtnSize.Sm, modifier = Modifier.fillMaxWidth())
-        }
-    }
+private fun MaintenanceTab(ui: GarageUi, onSelect: (MaintRow) -> Unit, onLog: () -> Unit, onAdd: () -> Unit) {
+    val toneColor = mapOf("ok" to MaterialTheme.colorScheme.primary, "warn" to Warn, "alert" to MaterialTheme.colorScheme.error)
 
     Eyebrow("Service intervals", Modifier.padding(bottom = 8.dp, start = 4.dp))
 
     OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 6.dp) {
         if (ui.maint.isEmpty()) {
-            Text("No intervals yet — add one below.", color = TextLo, fontSize = 13.sp, modifier = Modifier.padding(14.dp))
+            Text("No intervals yet — add one below.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(14.dp))
         }
         ui.maint.forEachIndexed { i, row ->
             if (i > 0) OpenDashDivider(Modifier.padding(horizontal = 4.dp))
-            val color = toneColor[row.tone] ?: Gold
-            val fill = (1f - (row.remainingKm.toFloat().coerceAtLeast(0f) / row.item.intervalKm.coerceAtLeast(1).toFloat())).coerceIn(0.06f, 1f)
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 12.dp)) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(11.dp)).background(Surf2).border(1.dp, Line, RoundedCornerShape(11.dp))) {
+            val color = toneColor[row.tone] ?: MaterialTheme.colorScheme.primary
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { onSelect(row) }.padding(horizontal = 6.dp, vertical = 12.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh).border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(11.dp))) {
                     Icon(iconFor(row.item.iconKey), null, tint = color, modifier = Modifier.size(20.dp))
                 }
                 Spacer(Modifier.width(13.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(row.item.name, color = TextHi, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
-                    Text("Last · ${"%,d".format(row.item.lastDoneOdoKm)} km", color = TextLo, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
+                    Text(row.item.name, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
+                    Text("Last · ${"%,d".format(row.item.lastDoneOdoKm)} km", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    Text(dueText(row.remainingKm), color = color, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
-                    Spacer(Modifier.height(6.dp))
-                    Box(Modifier.width(56.dp).height(4.dp).clip(CircleShape).background(Surf3)) {
-                        Box(Modifier.fillMaxWidth(fill).fillMaxHeight().clip(CircleShape).background(color))
+                    Text(dueText(row), color = color, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
+                    row.remainingDays?.let { days ->
+                        Text(
+                            "or ${days.coerceAtLeast(0)} days",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
                     }
+                    Icon(OpenDashIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp).padding(top = 4.dp))
                 }
             }
         }
@@ -198,98 +233,119 @@ private fun MaintenanceTab(ui: GarageUi, onMark: (MaintenanceItem) -> Unit, onLo
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FuelTab(ui: GarageUi, onAdd: () -> Unit, onDelete: (FuelFillup) -> Unit) {
-    OpenDashCard(modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
-            Column {
-                Eyebrow("Avg. efficiency · 30 days")
-                Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 7.dp)) {
-                    Text(ui.avgKmpl30?.let { "%.1f".format(it) } ?: "—", color = Gold, fontSize = 38.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily, letterSpacing = (-0.76).sp)
-                    Spacer(Modifier.width(6.dp))
-                    Text("km / l", color = TextMid, fontSize = 14.sp, fontFamily = GeistMonoFamily, modifier = Modifier.padding(bottom = 5.dp))
+private fun SparePartDetailsSheet(
+    row: MaintRow,
+    odometerKm: Int,
+    onLogService: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var interval by remember(row.item.sid) { mutableStateOf(row.item.intervalKm.toString()) }
+    val parsedInterval = interval.toIntOrNull()
+    val distanceUsed = (odometerKm - row.item.lastDoneOdoKm).coerceAtLeast(0)
+    val status = when (row.tone) { "alert" -> "Overdue"; "warn" -> "Due soon"; else -> "Good" }
+    val statusColor = when (row.tone) { "alert" -> MaterialTheme.colorScheme.error; "warn" -> Warn; else -> MaterialTheme.colorScheme.primary }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 20.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    row.item.name,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    status,
+                    color = statusColor,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                        .background(statusColor.copy(alpha = 0.14f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+
+            Spacer(Modifier.height(22.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                PartMetric("Distance used", "${"%,d".format(distanceUsed)} km", Modifier.weight(1f))
+                PartMetric(
+                    "Remaining",
+                    buildString {
+                        append("${"%,d".format(row.remainingKm.coerceAtLeast(0))} km")
+                        row.remainingDays?.let { append(" or ${it.coerceAtLeast(0)} days") }
+                    },
+                    Modifier.weight(1f),
+                )
+            }
+
+            Spacer(Modifier.height(18.dp))
+            OutlinedTextField(
+                value = interval,
+                onValueChange = { interval = it.filter(Char::isDigit) },
+                label = { Text(row.officialSchedule?.action?.intervalLabel ?: "Service interval (km)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                row.officialSchedule?.guidance
+                    ?: "Adjust the service interval for your riding style, terrain, and usage.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.5.sp,
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+                    .clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh).padding(12.dp),
+            )
+            row.officialSchedule?.let { official ->
+                Text(
+                    "Official source: ${official.manualPages}. Schedule is whichever comes earlier; shorten it for severe or dusty conditions.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.5.sp,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+
+            Spacer(Modifier.height(22.dp))
+            Text("History", color = MaterialTheme.colorScheme.onSurface, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            Row(modifier = Modifier.padding(top = 14.dp, start = 4.dp), verticalAlignment = Alignment.Top) {
+                Box(Modifier.padding(top = 6.dp).size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+                Column(Modifier.padding(start = 14.dp)) {
+                    Text(dfHistory.format(Date(row.item.lastDoneDateMs)), color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
+                    Text("${"%,d".format(row.item.lastDoneOdoKm)} km", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp))
                 }
             }
-        }
-        val chart = ui.fuel.filter { it.kmpl != null }.take(6).reversed()
-        if (chart.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            OpenDashBarChart(
-                data = chart.map { BarEntry(dfBar.format(Date(it.fill.dateMs)), it.kmpl!!.toFloat()) },
-                height = 108.dp,
+
+            Spacer(Modifier.height(24.dp))
+            OpenDashBtn(
+                "Log service",
+                onClick = { parsedInterval?.takeIf { it > 0 }?.let(onLogService) },
+                icon = OpenDashIcons.Check,
+                enabled = parsedInterval != null && parsedInterval > 0,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
     }
+}
 
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 18.dp)) {
-        listOf(
-            Pair("₹${"%,.0f".format(ui.spent30)}", "Spent · 30 days"),
-            Pair("%.1f l".format(ui.litres30), "Fuel · ${ui.fills30} fills"),
-        ).forEach { (v, k) ->
-            Column(modifier = Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(Surf1).border(1.dp, Line, RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 14.dp)) {
-                Text(v, color = TextHi, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
-                Eyebrow(k, Modifier.padding(top = 4.dp))
-            }
-        }
+@Composable
+private fun PartMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        Text(value, color = MaterialTheme.colorScheme.onSurface, fontSize = 17.sp, modifier = Modifier.padding(top = 4.dp))
     }
-
-    Eyebrow("Fill-ups", Modifier.padding(bottom = 8.dp, start = 4.dp))
-    OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 6.dp) {
-        if (ui.fuel.isEmpty()) {
-            Text("No fill-ups yet — add your first below.", color = TextLo, fontSize = 13.sp, modifier = Modifier.padding(14.dp))
-        }
-        ui.fuel.forEachIndexed { i, row ->
-            if (i > 0) OpenDashDivider(Modifier.padding(horizontal = 4.dp))
-            val f = row.fill
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { onDelete(f) }.padding(horizontal = 6.dp, vertical = 12.dp)) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(11.dp)).background(Surf2).border(1.dp, Line, RoundedCornerShape(11.dp))) {
-                    Icon(OpenDashIcons.Fuel, null, tint = TextMid, modifier = Modifier.size(20.dp))
-                }
-                Spacer(Modifier.width(13.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("%.1f l · ₹%,.0f".format(f.litres, f.cost), color = TextHi, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
-                    Text("${dfRow.format(Date(f.dateMs))} · ${"%,d".format(f.odometerKm)} km${if (f.location.isNotBlank()) " · ${f.location}" else ""}", color = TextLo, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp), maxLines = 1)
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(row.kmpl?.let { "%.1f".format(it) } ?: "—", color = Gold, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
-                    Eyebrow("km/l", Modifier.padding(top = 2.dp))
-                }
-            }
-        }
-    }
-
-    Spacer(Modifier.height(14.dp))
-    OpenDashBtn("Add fill-up", onClick = onAdd, icon = OpenDashIcons.Plus, variant = BtnVariant.Ghost, size = BtnSize.Md, modifier = Modifier.fillMaxWidth())
 }
 
 // ── Dialogs ──────────────────────────────────────────────────────────────
-
-@Composable
-private fun AddFuelDialog(defaultOdo: Int, onAdd: (Double, Double, Int, String) -> Unit, onDismiss: () -> Unit) {
-    var litres by remember { mutableStateOf("") }
-    var cost by remember { mutableStateOf("") }
-    var odo by remember { mutableStateOf(defaultOdo.toString()) }
-    var loc by remember { mutableStateOf("") }
-    val valid = litres.toDoubleOrNull() != null && cost.toDoubleOrNull() != null && odo.toIntOrNull() != null
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(enabled = valid, onClick = { onAdd(litres.toDouble(), cost.toDouble(), odo.toInt(), loc.trim()) }) { Text("Add", color = if (valid) Gold else TextLo) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextMid) } },
-        title = { Text("Add fill-up", color = TextHi) },
-        text = {
-            Column {
-                NumField(litres, { litres = it }, "Litres", true)
-                NumField(cost, { cost = it }, "Cost (₹)", true)
-                NumField(odo, { odo = it }, "Odometer (km)", false)
-                OutlinedTextField(loc, { loc = it }, label = { Text("Location (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-            }
-        },
-        containerColor = Surf1,
-    )
-}
 
 @Composable
 private fun AddServiceDialog(onAdd: (String, String, Int) -> Unit, onDismiss: () -> Unit) {
@@ -300,9 +356,9 @@ private fun AddServiceDialog(onAdd: (String, String, Int) -> Unit, onDismiss: ()
     val valid = name.isNotBlank() && interval.toIntOrNull() != null && interval.toInt() > 0
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { TextButton(enabled = valid, onClick = { onAdd(name.trim(), icon, interval.toInt()) }) { Text("Add", color = if (valid) Gold else TextLo) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextMid) } },
-        title = { Text("Add interval", color = TextHi) },
+        confirmButton = { TextButton(enabled = valid, onClick = { onAdd(name.trim(), icon, interval.toInt()) }) { Text("Add", color = if (valid) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+        title = { Text("Add interval", color = MaterialTheme.colorScheme.onSurface) },
         text = {
             Column {
                 OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -313,16 +369,16 @@ private fun AddServiceDialog(onAdd: (String, String, Int) -> Unit, onDismiss: ()
                     icons.forEach { key ->
                         Box(
                             contentAlignment = Alignment.Center,
-                            modifier = Modifier.size(38.dp).clip(RoundedCornerShape(10.dp))
-                                .background(if (key == icon) GoldTint else Surf2)
-                                .border(1.dp, if (key == icon) Gold else Line, RoundedCornerShape(10.dp))
+                            modifier = Modifier.size(38.dp).clip(RoundedCornerShape(16.dp))
+                                .background(if (key == icon) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh)
+                                .border(1.dp, if (key == icon) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
                                 .clickable { icon = key },
-                        ) { Icon(iconFor(key), null, tint = if (key == icon) Gold else TextMid, modifier = Modifier.size(18.dp)) }
+                        ) { Icon(iconFor(key), null, tint = if (key == icon) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) }
                     }
                 }
             }
         },
-        containerColor = Surf1,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
     )
 }
 
@@ -330,24 +386,24 @@ private fun AddServiceDialog(onAdd: (String, String, Int) -> Unit, onDismiss: ()
 private fun LogServiceDialog(rows: List<MaintRow>, odo: Int, onMark: (MaintenanceItem) -> Unit, onDelete: (MaintenanceItem) -> Unit, onAddNew: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onAddNew) { Text("Add interval", color = Gold) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Close", color = TextMid) } },
-        title = { Text("Mark a service done", color = TextHi) },
+        confirmButton = { TextButton(onClick = onAddNew) { Text("Add interval", color = MaterialTheme.colorScheme.primary) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close", color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+        title = { Text("Mark a service done", color = MaterialTheme.colorScheme.onSurface) },
         text = {
             Column {
-                Text("Marks the item done at ${"%,d".format(odo)} km.", color = TextLo, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
+                Text("Marks the item done at ${"%,d".format(odo)} km.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
                 rows.forEach { row ->
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-                        Icon(iconFor(row.item.iconKey), null, tint = TextMid, modifier = Modifier.size(18.dp))
+                        Icon(iconFor(row.item.iconKey), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(10.dp))
-                        Text(row.item.name, color = TextHi, fontSize = 13.5.sp, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { onMark(row.item) }) { Text("Done", color = Gold, fontSize = 13.sp) }
-                        Icon(OpenDashIcons.Cross, "delete", tint = TextLo, modifier = Modifier.size(16.dp).clickable { onDelete(row.item) })
+                        Text(row.item.name, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.5.sp, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { onMark(row.item) }) { Text("Done", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp) }
+                        Icon(OpenDashIcons.Cross, "delete", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp).clickable { onDelete(row.item) })
                     }
                 }
             }
         },
-        containerColor = Surf1,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
     )
 }
 
@@ -357,11 +413,11 @@ private fun OdometerDialog(current: Int, onSet: (Int) -> Unit, onDismiss: () -> 
     val valid = odo.toIntOrNull() != null
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { TextButton(enabled = valid, onClick = { onSet(odo.toInt()) }) { Text("Save", color = if (valid) Gold else TextLo) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextMid) } },
-        title = { Text("Set odometer", color = TextHi) },
+        confirmButton = { TextButton(enabled = valid, onClick = { onSet(odo.toInt()) }) { Text("Save", color = if (valid) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+        title = { Text("Set odometer", color = MaterialTheme.colorScheme.onSurface) },
         text = { NumField(odo, { odo = it }, "Odometer (km)", false) },
-        containerColor = Surf1,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
     )
 }
 

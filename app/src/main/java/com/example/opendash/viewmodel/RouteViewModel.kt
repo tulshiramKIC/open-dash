@@ -8,13 +8,9 @@ import android.location.LocationManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.opendash.data.SharedLocation
-import com.example.opendash.dash.nav.GeoPoint
-import com.example.opendash.dash.nav.Route
-import com.example.opendash.dash.nav.provider.NavigationProviderId
-import com.example.opendash.dash.nav.provider.NavigationProviderSelector
-import com.example.opendash.dash.nav.provider.NavigationRouteRequest
-import com.example.opendash.dash.nav.provider.NavigationRouteResult
-import com.example.opendash.dash.nav.provider.OsrmRouteProvider
+import com.example.opendash.navigation.route.GeoPoint
+import com.example.opendash.navigation.route.Route
+import com.example.opendash.navigation.route.Router
 import com.example.opendash.util.LocationParser
 import com.example.opendash.util.DebugLog
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -36,8 +33,6 @@ data class RouteState(
     val distanceText: String? = null,   // "218 km"
     val durationText: String? = null,   // "4h 50m"
     val etaText: String? = null,        // "13:32"
-    val providerText: String = "OpenFreeMap / OSRM",
-    val providerMessage: String? = null,
 )
 
 class RouteViewModel(app: Application) : AndroidViewModel(app) {
@@ -47,7 +42,6 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
 
     private val lm = app.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val repo = com.example.opendash.data.SyncRepository.get(app)
-    private val providerSelector = NavigationProviderSelector(app)
 
     private val _saved = MutableStateFlow<List<com.example.opendash.data.SavedLocation>>(emptyList())
     /** Saved destinations the rider can tap to load + navigate again. */
@@ -91,14 +85,16 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
         val loc = LocationParser.parse(text)
         _state.value = RouteState(
             destination = loc,
-            isResolving = loc.needsExpansion,
+            isResolving = loc.needsExpansion || (loc.url != null && loc.lat == null && loc.lng == null),
             pendingNavigate = true,
         )
         if (loc.lat != null && loc.lng != null) {
             computeRoute(loc.lat, loc.lng)
         } else if (loc.url != null) {
             viewModelScope.launch {
-                val (urlCoords, resolvedName) = LocationParser.resolve(loc.url)
+                val (urlCoords, resolvedName) = withTimeoutOrNull(12_000L) {
+                    LocationParser.resolve(loc.url)
+                } ?: (null to null)
                 val name = when {
                     loc.name.isNotBlank() && loc.name != "Loading…" -> loc.name
                     !resolvedName.isNullOrBlank() -> resolvedName
@@ -148,51 +144,29 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
 
         _state.value = _state.value.copy(routing = true)
         viewModelScope.launch {
-            val request = NavigationRouteRequest(
-                origin = GeoPoint(origin.latitude, origin.longitude),
-                destination = GeoPoint(destLat, destLng),
-                destinationName = _state.value.destination?.name.orEmpty(),
+            val r = Router.route(
+                GeoPoint(origin.latitude, origin.longitude),
+                GeoPoint(destLat, destLng),
             )
-            val provider = providerSelector.activeProvider()
-            val result = provider.route(request)
-            val (r, providerText, providerMessage) = when (result) {
-                is NavigationRouteResult.Success -> {
-                    if (result.route != null && result.usesProviderGeometry) {
-                        Triple(result.route, provider.displayName, result.message)
-                    } else {
-                        val fallback = OsrmRouteProvider.route(request)
-                        val route = (fallback as? NavigationRouteResult.Success)?.route
-                        Triple(
-                            route,
-                            provider.displayName,
-                            result.message ?: "Using OSRM for MapLibre route geometry.",
-                        )
-                    }
-                }
-                is NavigationRouteResult.Failure -> {
-                    val fallback = OsrmRouteProvider.route(request)
-                    val route = (fallback as? NavigationRouteResult.Success)?.route
-                    Triple(
-                        route,
-                        if (result.providerId == NavigationProviderId.GOOGLE_NAVIGATION) "OpenFreeMap / OSRM" else provider.displayName,
-                        result.reason,
-                    )
-                }
-            }
             _state.value = if (r != null) _state.value.copy(
                 route = r,
                 routing = false,
                 distanceText = fmtKm(r.totalMeters),
                 durationText = fmtDuration(r.totalSeconds),
                 etaText = fmtEta(r.totalSeconds),
-                providerText = providerText,
-                providerMessage = providerMessage,
-            ) else _state.value.copy(routing = false, providerText = providerText, providerMessage = providerMessage)
+            ) else _state.value.copy(routing = false)
         }
     }
 
     fun onNavigated() { _state.value = _state.value.copy(pendingNavigate = false) }
     fun clear() { _state.value = RouteState() }
+
+    fun refreshRouteIfPossible() {
+        val d = _state.value.destination ?: return
+        val lat = d.lat ?: return
+        val lng = d.lng ?: return
+        computeRoute(lat, lng)
+    }
 
     private fun fmtKm(m: Double) = "%.0f km".format(m / 1000.0)
     private fun fmtDuration(sec: Double): String {
@@ -202,3 +176,4 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
     private fun fmtEta(sec: Double): String =
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(System.currentTimeMillis() + (sec * 1000).toLong()))
 }
+

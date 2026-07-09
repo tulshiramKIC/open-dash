@@ -1,14 +1,14 @@
 package com.example.opendash.data
 
-import com.example.opendash.dash.nav.GeoPoint
-import com.example.opendash.dash.nav.PolylineCodec
+import com.example.opendash.navigation.route.GeoPoint
+import com.example.opendash.navigation.route.PolylineCodec
 
 /**
- * Accumulates GPS fixes for one ride (a connect→disconnect dash session) and produces a
+ * Accumulates GPS fixes for one ride recording session and produces a
  * [Ride] at the end. Points are thinned to ~every [MIN_MOVE_M] metres so the stored track
  * stays small; distance/speed are computed from the accepted points.
  *
- * Not thread-safe — driven from a single coroutine in DashViewModel.
+ * Not thread-safe - drive it from a single recording coroutine.
  */
 class RideRecorder {
 
@@ -28,8 +28,9 @@ class RideRecorder {
         recording = true
     }
 
-    fun add(lat: Double, lng: Double, speedMps: Float, timeMs: Long) {
+    fun add(lat: Double, lng: Double, speedMps: Float, accuracyM: Float, timeMs: Long) {
         if (!recording) return
+        if (accuracyM > ACCURACY_GATE_M) return
         val p = GeoPoint(lat, lng)
         val prev = last
         if (prev == null) {
@@ -37,7 +38,7 @@ class RideRecorder {
         }
         val step = GeoPoint.distMeters(prev, p)
         if (step < MIN_MOVE_M) return   // thin out jitter / stationary noise
-        distanceM += step
+        if (speedMps >= STILL_SPEED_MPS) distanceM += step
         // Only count max speed on genuine movement, so parked GPS speed spikes don't inflate it.
         if (speedMps > maxSpeed) maxSpeed = speedMps.toDouble()
         points.add(p); last = p; lastMs = timeMs
@@ -51,7 +52,7 @@ class RideRecorder {
         recording = false
         val end = System.currentTimeMillis()
         val durationS = ((end - startMs) / 1000L).coerceAtLeast(0)
-        if (points.size < 2 || (distanceM < MIN_RIDE_M && durationS < MIN_RIDE_S)) return null
+        if (points.size < 2 || distanceM < MIN_RIDE_M) return null
         val avg = if (durationS > 0) distanceM / durationS else 0.0
         val first = points.first(); val lastPt = points.last()
         return Ride(
@@ -66,7 +67,8 @@ class RideRecorder {
 
     companion object {
         private const val MIN_MOVE_M = 8.0     // thin track points to ~every 8 m
-        private const val MIN_RIDE_M = 150.0   // discard rides shorter than this…
-        private const val MIN_RIDE_S = 90L     // …unless they lasted at least this long
+        private const val MIN_RIDE_M = 150.0
+        private const val ACCURACY_GATE_M = 20f
+        private const val STILL_SPEED_MPS = 0.7f
     }
 }
