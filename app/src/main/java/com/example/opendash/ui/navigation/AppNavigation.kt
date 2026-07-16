@@ -7,16 +7,17 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -32,16 +33,13 @@ import com.example.opendash.ui.OpenDashIcons
 import com.example.opendash.ui.screens.*
 import com.example.opendash.ui.theme.*
 import com.example.opendash.viewmodel.AppViewModel
-import com.example.opendash.viewmodel.AuthViewModel
 import com.example.opendash.viewmodel.ConnStage
 import com.example.opendash.viewmodel.ConnectionState
 import com.example.opendash.viewmodel.DashViewModel
 import com.example.opendash.viewmodel.RouteViewModel
 
 sealed class Screen(val route: String) {
-    object Login    : Screen("login")
     object Home     : Screen("home")
-    object Vehicles : Screen("vehicles")
     object Expenses : Screen("expenses")
     object Route    : Screen("route")
     object Dash     : Screen("dash")
@@ -54,19 +52,18 @@ private data class NavTab(val screen: Screen, val icon: ImageVector, val label: 
 
 private val bottomTabs = listOf(
     NavTab(Screen.Home,   OpenDashIcons.Home,    "Home"),
-    NavTab(Screen.Vehicles, OpenDashIcons.Motor, "Vehicles"),
+    NavTab(Screen.Route,  OpenDashIcons.Navi,    "Navigate"),
     NavTab(Screen.Expenses, OpenDashIcons.Chart, "Expenses"),
-    NavTab(Screen.Garage, OpenDashIcons.Wrench,  "Garage"),
+    NavTab(Screen.Garage, OpenDashIcons.Motor,  "Garage"),
     NavTab(Screen.Settings, OpenDashIcons.Gear, "More"),
 )
 
 private val bottomRoutes = bottomTabs.map { it.screen.route }
-private val homeChildRoutes = listOf(Screen.Route.route, Screen.Dash.route, Screen.Rides.route)
+private val homeChildRoutes = listOf(Screen.Dash.route, Screen.Rides.route)
 private val shellRoutes = bottomRoutes + homeChildRoutes
 
 @Composable
 fun AppNavigation(
-    authViewModel: AuthViewModel = viewModel(),
     appViewModel: AppViewModel = viewModel(),
     dashViewModel: DashViewModel = viewModel(),
     routeViewModel: RouteViewModel = viewModel(),
@@ -76,7 +73,8 @@ fun AppNavigation(
     val currentRoute = navBackStackEntry?.destination?.route
 
     val showBottomNav = currentRoute in shellRoutes
-    val canSwipeBottomTabs = currentRoute in bottomRoutes
+    // No tab-swipe on the Route tab — horizontal drags there pan the map.
+    val canSwipeBottomTabs = currentRoute in bottomRoutes && currentRoute != Screen.Route.route
 
     val garageTab by appViewModel.garageTab.collectAsState()
     val routeState by routeViewModel.state.collectAsState()
@@ -98,7 +96,7 @@ fun AppNavigation(
 
     // Auto-navigate to Route when a Maps share arrives
     LaunchedEffect(routeState.pendingNavigate, currentRoute) {
-        if (routeState.pendingNavigate && currentRoute != null && currentRoute != Screen.Login.route) {
+        if (routeState.pendingNavigate && currentRoute != null) {
             if (currentRoute != Screen.Route.route) {
                 navController.navigate(Screen.Route.route) { launchSingleTop = true }
             }
@@ -107,13 +105,11 @@ fun AppNavigation(
     }
 
     fun navigateHome() {
-        navController.navigate(Screen.Home.route) {
-            popUpTo(Screen.Home.route) {
-                inclusive = false
-                saveState = true
-            }
-            launchSingleTop = true
-            restoreState = true
+        // Home is the start destination, so it's always below us in the stack — popping
+        // back to it is the reliable move. navigate(home) { popUpTo(home) } silently
+        // no-ops from some routes, which left the Home tab dead.
+        if (!navController.popBackStack(Screen.Home.route, false)) {
+            navController.navigate(Screen.Home.route) { launchSingleTop = true }
         }
     }
 
@@ -155,7 +151,7 @@ fun AppNavigation(
         ) {
             NavHost(
                 navController = navController,
-                startDestination = Screen.Login.route,
+                startDestination = Screen.Home.route,
                 enterTransition = {
                     val direction = transitionDirection(initialState.destination.route, targetState.destination.route)
                     slideInHorizontally(tween(350)) { width -> width * direction } + fadeIn(tween(350))
@@ -173,22 +169,6 @@ fun AppNavigation(
                     slideOutHorizontally(tween(200)) { width -> width * direction } + fadeOut(tween(200))
                 },
             ) {
-                composable(Screen.Login.route) {
-                    LoginScreen(
-                        authViewModel = authViewModel,
-                        onSignedIn = {
-                            navController.navigate(Screen.Home.route) {
-                                popUpTo(Screen.Login.route) { inclusive = true }
-                            }
-                        },
-                        onSkip = {
-                            navController.navigate(Screen.Home.route) {
-                                popUpTo(Screen.Login.route) { inclusive = true }
-                            }
-                        },
-                    )
-                }
-
                 composable(Screen.Home.route) {
                     HomeScreen(
                         conn = conn,
@@ -205,10 +185,6 @@ fun AppNavigation(
                     )
                 }
 
-                composable(Screen.Vehicles.route) {
-                    VehiclesScreen()
-                }
-
                 composable(Screen.Expenses.route) {
                     ExpensesScreen()
                 }
@@ -223,9 +199,10 @@ fun AppNavigation(
                                 lat  = routeState.destination?.lat,
                                 lng  = routeState.destination?.lng,
                             )
-                            // Start navigation: open the dash view and begin the
-                            // WiFi → auth → stream flow (no-op if already streaming).
-                            dashViewModel.connect()
+                            // Start navigation: open the dash view. DashScreen owns the
+                            // connect — it requests the runtime permissions first (starting
+                            // the location-type FGS without them is a fatal crash on 14+)
+                            // and then begins the WiFi → auth → stream flow.
                             navController.navigate(Screen.Dash.route) {
                                 popUpTo(Screen.Home.route)
                             }
@@ -252,13 +229,7 @@ fun AppNavigation(
                     SettingsScreen(
                         conn = conn,
                         onConnChange = { appViewModel.setConn(it) },
-                        authViewModel = authViewModel,
                         dashViewModel = dashViewModel,
-                        onSignedOut = {
-                            navController.navigate(Screen.Login.route) {
-                                popUpTo(0) { inclusive = true }
-                            }
-                        },
                         onBack = { navController.navigate(Screen.Home.route) { launchSingleTop = true } },
                     )
                 }
@@ -282,10 +253,9 @@ private fun transitionDirection(fromRoute: String?, toRoute: String?): Int =
 
 private fun navOrderIndex(route: String?): Int = when (route) {
     Screen.Home.route -> 0
-    Screen.Route.route -> 1
-    Screen.Dash.route -> 2
     Screen.Rides.route -> 3
-    Screen.Vehicles.route -> 10
+    Screen.Route.route -> 10
+    Screen.Dash.route -> 11
     Screen.Expenses.route -> 20
     Screen.Garage.route -> 30
     Screen.Settings.route -> 40
@@ -297,43 +267,53 @@ private fun OpenDashBottomNav(
     currentRoute: String?,
     onNavSelect: (Screen) -> Unit,
 ) {
-    NavigationBar(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(28.dp))
-            .navigationBarsPadding(),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        tonalElevation = 0.dp,
+            .navigationBarsPadding()
+            .background(Bg1),
     ) {
-        bottomTabs.forEach { tab ->
-            val active = currentRoute == tab.screen.route
-            NavigationBarItem(
-                selected = active,
-                onClick = { onNavSelect(tab.screen) },
-                icon = {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 6.dp)
+                .height(64.dp)
+                .clip(RoundedCornerShape(21.dp))
+                .background(Bg1)
+                .border(1.dp, Line2, RoundedCornerShape(21.dp))
+                .padding(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            bottomTabs.forEach { tab ->
+                val active = currentRoute == tab.screen.route
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (active) GoldTint else Color.Transparent)
+                        .clickable { onNavSelect(tab.screen) },
+                ) {
                     Icon(
                         tab.icon,
                         contentDescription = tab.label,
-                        modifier = Modifier.size(23.dp),
+                        tint = if (active) GoldBright else TextLo,
+                        modifier = Modifier.size(21.dp),
                     )
-                },
-                label = {
+                    Spacer(Modifier.height(3.dp))
                     Text(
                         tab.label,
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        color = if (active) GoldBright else TextLo,
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
+                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
                         fontFamily = GeistFamily,
+                        maxLines = 1,
                     )
-                },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
-            )
+                }
+            }
         }
     }
 }

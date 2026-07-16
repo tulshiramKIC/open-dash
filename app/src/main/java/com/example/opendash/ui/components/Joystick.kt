@@ -31,6 +31,8 @@ fun Joystick(
 ) {
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
     val maxPx = remember(size) { size.value / 2f - 24f }
+    val guideColor = Line3
+    val knobColors = listOf(GoldBright, GoldDeep)
 
     Box(
         contentAlignment = Alignment.Center,
@@ -90,7 +92,7 @@ fun Joystick(
                 Offset(s * 0.86f, s * 0.5f) to Offset(s * 0.68f, s * 0.5f),
             )
             guides.forEach { (start, end) ->
-                drawLine(Line3, start, end, strokeWidth = 2f, cap = StrokeCap.Round)
+                drawLine(guideColor, start, end, strokeWidth = 2f, cap = StrokeCap.Round)
             }
         }
 
@@ -103,7 +105,7 @@ fun Joystick(
             val r = 22.dp.toPx()
             drawCircle(
                 brush = Brush.linearGradient(
-                    listOf(GoldBright, GoldDeep),
+                    knobColors,
                     start = Offset(r * 0.4f, r * 0.4f),
                     end = Offset(r * 1.6f, r * 1.6f),
                 ),

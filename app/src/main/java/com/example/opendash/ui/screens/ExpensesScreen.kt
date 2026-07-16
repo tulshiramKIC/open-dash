@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -53,11 +54,15 @@ import com.example.opendash.data.Expense
 import com.example.opendash.data.OpenDashCurrency
 import com.example.opendash.data.formatCurrencyAmount
 import com.example.opendash.ui.OpenDashIcons
+import com.example.opendash.ui.components.BarEntry
 import com.example.opendash.ui.components.BtnSize
 import com.example.opendash.ui.components.BtnVariant
+import com.example.opendash.ui.components.Eyebrow
+import com.example.opendash.ui.components.OpenDashBarChart
 import com.example.opendash.ui.components.OpenDashBtn
 import com.example.opendash.ui.components.OpenDashCard
 import com.example.opendash.ui.components.OpenDashDivider
+import com.example.opendash.ui.components.OpenDashIconBtn
 import com.example.opendash.ui.components.ScreenHeader
 import com.example.opendash.ui.theme.GeistFamily
 import com.example.opendash.ui.theme.GeistMonoFamily
@@ -97,27 +102,53 @@ fun ExpensesScreen(vm: GarageViewModel = viewModel()) {
                 .padding(18.dp)
                 .padding(bottom = 96.dp),
         ) {
-            ScreenHeader(title = "My Expenses")
+            ScreenHeader(title = "Expenses")
 
-            OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 16.dp) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column {
-                        Text("Total", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                        Text(formatCurrencyAmount(total, currency), color = MaterialTheme.colorScheme.primary, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
-                    }
-                    ExpensePeriodSelector(
-                        periods = periods,
-                        selected = selectedPeriod,
-                        onSelect = { selectedPeriod = it },
-                        modifier = Modifier.weight(1f),
+            OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 18.dp) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Eyebrow("Total spend", Modifier.weight(1f))
+                    OpenDashIconBtn(
+                        OpenDashIcons.Share,
+                        onClick = { if (shown.isNotEmpty()) showShare = true },
+                        size = 38.dp,
                     )
-                    OpenDashBtn(
-                        "Share",
-                        onClick = { showShare = true },
-                        icon = OpenDashIcons.Share,
-                        variant = BtnVariant.Ghost,
-                        size = BtnSize.Sm,
-                        enabled = shown.isNotEmpty(),
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    formatCurrencyAmount(total, currency),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = GeistFamily,
+                    letterSpacing = (-0.6).sp,
+                )
+                Text(
+                    "This month · ${formatCurrencyAmount(ui.expenses30, currency)}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp,
+                    fontFamily = GeistFamily,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Spacer(Modifier.height(14.dp))
+                ExpensePeriodSelector(
+                    periods = periods,
+                    selected = selectedPeriod,
+                    onSelect = { selectedPeriod = it },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            // Monthly spend, last 6 months — hidden until there's something to plot.
+            val monthlySpend = remember(ui.expenses) { lastSixMonthsSpend(ui.expenses) }
+            if (monthlySpend.any { it.value > 0f }) {
+                Spacer(Modifier.height(14.dp))
+                OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 16.dp) {
+                    Eyebrow("Monthly spend")
+                    OpenDashBarChart(
+                        monthlySpend,
+                        height = 112.dp,
+                        valueFmt = { v -> if (v >= 1000f) "%.1fk".format(v / 1000f) else "%.0f".format(v) },
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
@@ -190,8 +221,7 @@ private fun ExpenseFilterChip(label: String, selected: Boolean, color: Color, on
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .clip(CircleShape)
-            .background(if (selected) MaterialTheme.colorScheme.surfaceContainerHigh else Color.Transparent)
-            .border(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, CircleShape)
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 9.dp),
     ) {
@@ -313,7 +343,6 @@ private fun AddExpenseScreenDialog(
                             .padding(top = 8.dp)
                             .clip(RoundedCornerShape(16.dp))
                             .background(MaterialTheme.colorScheme.surfaceContainer)
-                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
                             .padding(horizontal = 14.dp, vertical = 12.dp),
                     ) {
                         Text("Motorcycle", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
@@ -458,6 +487,23 @@ private data class ExpensePeriod(
         (startMs == null || timestamp >= startMs) && (endMs == null || timestamp < endMs)
 }
 
+/** Total spend per calendar month for the last six months, oldest first. */
+private fun lastSixMonthsSpend(expenses: List<Expense>): List<BarEntry> {
+    val monthFmt = SimpleDateFormat("MMM", Locale.getDefault())
+    return (5 downTo 0).map { back ->
+        val start = Calendar.getInstance().apply {
+            set(Calendar.DAY_OF_MONTH, 1)
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            add(Calendar.MONTH, -back)
+        }
+        val end = (start.clone() as Calendar).apply { add(Calendar.MONTH, 1) }
+        val sum = expenses
+            .filter { it.dateMs >= start.timeInMillis && it.dateMs < end.timeInMillis }
+            .sumOf { it.amount }
+        BarEntry(monthFmt.format(start.time), sum.toFloat())
+    }
+}
+
 private fun expensePeriods(): List<ExpensePeriod> {
     val now = Calendar.getInstance()
     val year = now.get(Calendar.YEAR)
@@ -487,9 +533,9 @@ private fun ExpensePeriodSelector(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(16.dp))
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                 .clickable { expanded = true }
-                .padding(horizontal = 9.dp, vertical = 9.dp),
+                .padding(horizontal = 10.dp, vertical = 10.dp),
         ) {
             Icon(OpenDashIcons.Cal, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
             Spacer(Modifier.width(6.dp))

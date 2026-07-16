@@ -16,6 +16,7 @@ import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,19 +61,15 @@ fun OpenDashCard(
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val border = BorderStroke(
-        1.dp,
-        if (glow) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant,
-    )
-
+    // Tonal card, no hairline border — the surface tone does the separation.
     Surface(
         modifier = modifier,
         shape = CardShape,
         color = MaterialTheme.colorScheme.surfaceContainer,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        tonalElevation = if (glow) 4.dp else 0.dp,
-        shadowElevation = if (glow) 2.dp else 0.dp,
-        border = border,
+        tonalElevation = 0.dp,
+        shadowElevation = if (glow) 6.dp else 1.dp,
+        border = if (glow) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)) else null,
     ) {
         Column(
             modifier = Modifier
@@ -90,8 +87,7 @@ fun OpenDashSurfaceCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
-        modifier = modifier
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CardShape),
+        modifier = modifier,
         shape = CardShape,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
@@ -119,7 +115,7 @@ fun OpenDashBtn(
     val iconSize = when (size) { BtnSize.Sm -> 17.dp; else -> 20.dp }
     val enabledContentColor = when (variant) {
         BtnVariant.Primary -> MaterialTheme.colorScheme.onPrimary
-        BtnVariant.Secondary -> MaterialTheme.colorScheme.onSurface
+        BtnVariant.Secondary -> MaterialTheme.colorScheme.onSecondaryContainer
         BtnVariant.Ghost -> MaterialTheme.colorScheme.onSurfaceVariant
         BtnVariant.Danger -> MaterialTheme.colorScheme.error
     }
@@ -160,15 +156,15 @@ fun OpenDashBtn(
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             ),
         ) { content() }
-        BtnVariant.Secondary -> OutlinedButton(
+        BtnVariant.Secondary -> FilledTonalButton(
             onClick = onClick,
             modifier = modifier.heightIn(min = height),
             enabled = enabled,
             shapes = ButtonDefaults.shapes(),
-            colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = MaterialTheme.colorScheme.onSurface,
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
             ),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         ) { content() }
         BtnVariant.Ghost -> TextButton(
             onClick = onClick,
@@ -228,12 +224,12 @@ fun OpenDashChip(
     icon: ImageVector? = null,
     modifier: Modifier = Modifier,
 ) {
-    val (container, labelColor, outline) = when (tone) {
-        ChipTone.Gold -> Triple(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f))
-        ChipTone.Warn -> Triple(Warn.copy(alpha = 0.13f), Warn, Warn.copy(alpha = 0.3f))
-        ChipTone.Alert -> Triple(MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.error.copy(alpha = 0.32f))
-        ChipTone.Off -> Triple(MaterialTheme.colorScheme.surfaceContainerLow, MaterialTheme.colorScheme.outline, MaterialTheme.colorScheme.outlineVariant)
-        ChipTone.Neutral -> Triple(MaterialTheme.colorScheme.surfaceContainerHigh, MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.outlineVariant)
+    val (container, labelColor) = when (tone) {
+        ChipTone.Gold -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.onPrimaryContainer
+        ChipTone.Warn -> MaterialTheme.colorScheme.tertiaryContainer to MaterialTheme.colorScheme.onTertiaryContainer
+        ChipTone.Alert -> MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
+        ChipTone.Off -> MaterialTheme.colorScheme.surfaceContainerHigh to MaterialTheme.colorScheme.outline
+        ChipTone.Neutral -> MaterialTheme.colorScheme.surfaceContainerHigh to MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     AssistChip(
@@ -254,11 +250,7 @@ fun OpenDashChip(
             { Icon(it, contentDescription = null, tint = labelColor, modifier = Modifier.size(14.dp)) }
         },
         shape = ChipShape,
-        border = AssistChipDefaults.assistChipBorder(
-            enabled = false,
-            borderColor = outline,
-            disabledBorderColor = outline,
-        ),
+        border = null,
         colors = AssistChipDefaults.assistChipColors(
             disabledContainerColor = container,
             disabledLabelColor = labelColor,
@@ -320,22 +312,89 @@ fun OpenDashSegmented(
     }
 }
 
+// ---- Dashboard stat tile ----
+enum class StatTone { Neutral, Warn, Alert }
+
+/** Stat tile: small icon, big value + unit, label. Used on Home/Garage/Expenses grids. */
+@Composable
+fun OpenDashStatTile(
+    icon: ImageVector,
+    value: String,
+    unit: String,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    tone: StatTone = StatTone.Neutral,
+) {
+    val accent = when (tone) {
+        StatTone.Alert -> MaterialTheme.colorScheme.error
+        StatTone.Warn -> MaterialTheme.colorScheme.tertiary
+        StatTone.Neutral -> MaterialTheme.colorScheme.onSurface
+    }
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shadowElevation = 1.dp,
+        modifier = modifier,
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Icon(
+                icon, contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(19.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    value,
+                    color = accent,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = GeistFamily,
+                    letterSpacing = (-0.4).sp,
+                    maxLines = 1,
+                )
+                if (unit.isNotEmpty()) {
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        unit,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.5.sp,
+                        fontFamily = GeistFamily,
+                        modifier = Modifier.padding(bottom = 3.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                label,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.5.sp,
+                fontFamily = GeistFamily,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
 // ---- Divider ----
 @Composable
 fun OpenDashDivider(modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+    Box(modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)))
 }
 
-// ---- Eyebrow label ----
+// ---- Section / field label (sentence case — no mono caps) ----
 @Composable
 fun Eyebrow(text: String, modifier: Modifier = Modifier) {
     Text(
-        text = text.uppercase(),
+        text = text,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontSize = 11.sp,
-        letterSpacing = 0.16.sp,
-        fontFamily = GeistMonoFamily,
-        fontWeight = FontWeight.Normal,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+        fontFamily = GeistFamily,
+        letterSpacing = 0.sp,
         modifier = modifier,
     )
 }
@@ -357,9 +416,9 @@ fun OpenDashRow(
     onClick: (() -> Unit)? = null,
 ) {
     val (iconBg, iconFg) = when (iconTone) {
-        IconTone.Gold   -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.primary
-        IconTone.Alert  -> Alert.copy(alpha = 0.13f) to Alert
-        IconTone.Warn   -> Warn.copy(alpha = 0.13f) to Warn
+        IconTone.Gold   -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.onPrimaryContainer
+        IconTone.Alert  -> MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
+        IconTone.Warn   -> MaterialTheme.colorScheme.tertiaryContainer to MaterialTheme.colorScheme.onTertiaryContainer
         IconTone.Neutral -> MaterialTheme.colorScheme.surfaceContainerHigh to MaterialTheme.colorScheme.onSurfaceVariant
     }
 
@@ -375,9 +434,8 @@ fun OpenDashRow(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .size(42.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(iconBg)
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp)),
+                    .clip(CircleShape)
+                    .background(iconBg),
             ) {
                 Icon(icon, contentDescription = null, tint = iconFg, modifier = Modifier.size(20.dp))
             }

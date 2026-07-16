@@ -27,11 +27,18 @@ data class RouteState(
     val isResolving: Boolean = false,
     val pendingNavigate: Boolean = false,
     // Real routing results
-    val route: Route? = null,
+    val route: Route? = null,           // the selected route (== routes[selectedRouteIndex])
+    val routes: List<Route> = emptyList(), // primary + alternatives; [0] is Mapbox's primary
+    val selectedRouteIndex: Int = 0,
     val routing: Boolean = false,
     val distanceText: String? = null,   // "218 km"
     val durationText: String? = null,   // "4h 50m"
     val etaText: String? = null,        // "13:32"
+    val travelMode: Router.TravelMode = Router.TravelMode.BIKE,
+    // In-app destination search
+    val searchQuery: String = "",
+    val searchResults: List<com.example.opendash.data.Place> = emptyList(),
+    val searching: Boolean = false,
 )
 
 class RouteViewModel(app: Application) : AndroidViewModel(app) {
@@ -132,6 +139,16 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Switch Car ⇄ Bike (bike = no motorways) and recompute the current route with it. */
+    @SuppressLint("MissingPermission")
+    fun selectTravelMode(mode: Router.TravelMode) {
+        if (_state.value.travelMode == mode) return
+        _state.value = _state.value.copy(travelMode = mode)
+        Router.currentMode = mode   // dash-side reroutes pick this up too
+        val d = _state.value.destination
+        if (d?.lat != null && d.lng != null) computeRoute(d.lat, d.lng)
+    }
+
     @SuppressLint("MissingPermission")
     private fun computeRoute(destLat: Double, destLng: Double) {
         val origin = runCatching {
@@ -141,19 +158,104 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
 
         _state.value = _state.value.copy(routing = true)
         viewModelScope.launch {
-            val r = Router.route(
+            val list = Router.routes(
                 GeoPoint(origin.latitude, origin.longitude),
                 GeoPoint(destLat, destLng),
+                alternatives = true,
             )
-            _state.value = if (r != null) _state.value.copy(
-                route = r,
+            val primary = list.firstOrNull()
+            _state.value = if (primary != null) _state.value.copy(
+                route = primary,
+                routes = list,
+                selectedRouteIndex = 0,
                 routing = false,
-                distanceText = fmtKm(r.totalMeters),
-                durationText = fmtDuration(r.totalSeconds),
-                etaText = fmtEta(r.totalSeconds),
-            ) else _state.value.copy(routing = false)
+                distanceText = fmtKm(primary.totalMeters),
+                durationText = fmtDuration(primary.totalSeconds),
+                etaText = fmtEta(primary.totalSeconds),
+            ) else _state.value.copy(routing = false, routes = emptyList())
         }
     }
+
+    /** Pick one of the fetched alternatives as the active route (phone-side selection). */
+    fun selectRoute(index: Int) {
+        val sel = _state.value.routes.getOrNull(index) ?: return
+        _state.value = _state.value.copy(
+            selectedRouteIndex = index,
+            route = sel,
+            distanceText = fmtKm(sel.totalMeters),
+            durationText = fmtDuration(sel.totalSeconds),
+            etaText = fmtEta(sel.totalSeconds),
+        )
+    }
+
+    // ── In-app destination search (Google Places → Mapbox → Android Geocoder) ──
+    private var searchJob: kotlinx.coroutines.Job? = null
+
+    // Live rider position, pushed from the Navigate screen's GPS tracker. Search results
+    // are biased around this; the last-known-location cache alone is often empty/stale,
+    // which made "kfc" rank a far-away city above the one 5 km away.
+    private var liveOrigin: Pair<Double, Double>? = null
+    fun updateOrigin(lat: Double, lng: Double) { liveOrigin = lat to lng }
+    // One Search Box session spans the suggests + the retrieve of the chosen result; a new
+    // session starts after each pick (Mapbox bills per completed session).
+    private var searchSession = java.util.UUID.randomUUID().toString()
+
+    fun onSearchQueryChange(q: String) {
+        _state.value = _state.value.copy(searchQuery = q)
+        searchJob?.cancel()
+        if (q.isBlank()) {
+            _state.value = _state.value.copy(searchResults = emptyList(), searching = false)
+            return
+        }
+        searchJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(300)   // debounce keystrokes
+            _state.value = _state.value.copy(searching = true)
+            val origin = liveOrigin ?: lastKnownOrigin()
+            var results = com.example.opendash.data.PlaceSearch.suggest(q, origin?.first, origin?.second, searchSession)
+            // Fallback: no Mapbox token / offline → single best match from the device geocoder.
+            if (results.isEmpty()) {
+                geocode(q)?.let { (lat, lng) ->
+                    results = listOf(com.example.opendash.data.Place(name = q, address = "", lat = lat, lng = lng))
+                }
+            }
+            // Ignore stale responses if the query moved on.
+            if (_state.value.searchQuery == q) {
+                _state.value = _state.value.copy(searchResults = results, searching = false)
+            }
+        }
+    }
+
+    /** Pick a search result as the destination and compute its route. */
+    fun chooseSearchResult(place: com.example.opendash.data.Place) {
+        searchJob?.cancel()
+        viewModelScope.launch {
+            // Suggestions have no coordinates — resolve via their provider; geocoder hits already do.
+            val coords = com.example.opendash.data.PlaceSearch.resolve(place, searchSession)
+            searchSession = java.util.UUID.randomUUID().toString()  // start a fresh session
+            if (coords == null) {
+                _state.value = _state.value.copy(searching = false)
+                DebugLog.w(TAG) { "retrieve returned no coords for '${place.name}'" }
+                return@launch
+            }
+            val (lat, lng) = coords
+            _state.value = _state.value.copy(
+                destination = SharedLocation(name = place.name, lat = lat, lng = lng),
+                isResolving = false,
+                searchQuery = "",
+                searchResults = emptyList(),
+                searching = false,
+            )
+            computeRoute(lat, lng)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun lastKnownOrigin(): Pair<Double, Double>? = runCatching {
+        (lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            ?: lm.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER))
+            ?.let { it.latitude to it.longitude }
+    }.getOrNull()
 
     fun onNavigated() { _state.value = _state.value.copy(pendingNavigate = false) }
     fun clear() { _state.value = RouteState() }

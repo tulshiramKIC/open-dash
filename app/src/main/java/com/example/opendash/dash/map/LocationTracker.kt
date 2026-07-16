@@ -18,7 +18,8 @@ class LocationTracker(context: Context) {
         private const val GPS_STALE_MS = 10_000L
     }
 
-    private val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    private val appContext = context.applicationContext
+    private val lm = appContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
     private val _location = MutableStateFlow<Location?>(null)
     val location = _location.asStateFlow()
@@ -66,29 +67,51 @@ class LocationTracker(context: Context) {
 
     private var running = false
 
-    /** Requires ACCESS_FINE_LOCATION at runtime; no-ops without it. */
+    private fun hasFineLocationPermission(): Boolean =
+        appContext.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    private fun hasLocationPermission(): Boolean =
+        hasFineLocationPermission() ||
+            appContext.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    @SuppressLint("MissingPermission")
+    private fun lastKnownFrom(provider: String): Location? {
+        if (!hasLocationPermission() || provider == LocationManager.GPS_PROVIDER && !hasFineLocationPermission()) {
+            return null
+        }
+        return runCatching { lm.getLastKnownLocation(provider) }.getOrNull()
+    }
+
+    /** Starts every permitted provider independently so one unavailable provider cannot stop the others. */
     @SuppressLint("MissingPermission")
     fun start() {
         if (running) return
-        try {
-            _location.value = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            // GPS for accuracy + heading; NETWORK as a fallback while GPS warms up.
-            // minDistance=0: keep GPS fixes flowing every second even when parked.
-            // With a minimum distance, GPS goes quiet while stationary, its last fix
-            // ages out, and a coarse NETWORK fix takes over → the marker drifts.
-            for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+        if (!hasLocationPermission()) {
+            DebugLog.w(TAG) { "Location permission missing — GPS disabled" }
+            return
+        }
+
+        lastKnownFrom(LocationManager.GPS_PROVIDER)
+            ?.let { _location.value = it }
+            ?: lastKnownFrom(LocationManager.NETWORK_PROVIDER)?.let { _location.value = it }
+
+        var registered = false
+        for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+            if (provider == LocationManager.GPS_PROVIDER && !hasFineLocationPermission()) continue
+            runCatching {
                 if (lm.isProviderEnabled(provider)) {
                     lm.requestLocationUpdates(provider, 500L, 0f, listener, Looper.getMainLooper())
+                    registered = true
                 }
+            }.onFailure { error ->
+                DebugLog.w(TAG) { "$provider updates unavailable: ${error.message}" }
             }
-            running = true
-            DebugLog.i(TAG) { "Location updates started" }
-        } catch (e: SecurityException) {
-            DebugLog.w(TAG) { "Location permission missing — GPS disabled" }
-        } catch (e: Exception) {
-            DebugLog.w(TAG) { "GPS start failed: ${e.message}" }
         }
+        running = registered
+        if (registered) DebugLog.i(TAG) { "Location updates started" }
+        else DebugLog.w(TAG) { "No location provider is enabled" }
     }
 
     fun stop() {
@@ -99,12 +122,9 @@ class LocationTracker(context: Context) {
 
     /** Best last-known fix without starting updates (for routing before connecting). */
     @SuppressLint("MissingPermission")
-    fun lastKnown(): android.location.Location? = try {
+    fun lastKnown(): Location? =
         _location.value
-            ?: lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-            ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            ?: lm.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
-    } catch (e: Exception) {
-        null
-    }
+            ?: lastKnownFrom(LocationManager.GPS_PROVIDER)
+            ?: lastKnownFrom(LocationManager.NETWORK_PROVIDER)
+            ?: lastKnownFrom(LocationManager.PASSIVE_PROVIDER)
 }

@@ -65,7 +65,6 @@ import com.example.opendash.data.DashWallpaperKind
 import com.example.opendash.data.DashWallpaperPaths
 import com.example.opendash.data.CurrencySettings
 import com.example.opendash.data.OpenDashCurrency
-import com.example.opendash.viewmodel.AuthViewModel
 import com.example.opendash.viewmodel.ConnectionState
 import com.example.opendash.viewmodel.DashViewModel
 
@@ -83,18 +82,10 @@ private enum class MorePage(val title: String) {
 fun SettingsScreen(
     conn: ConnectionState,
     onConnChange: (ConnectionState) -> Unit,
-    authViewModel: AuthViewModel,
     dashViewModel: DashViewModel,
-    onSignedOut: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val auth by authViewModel.state.collectAsState()
     val dashUi by dashViewModel.ui.collectAsState()
-    val email = auth.email ?: "Not signed in"
-    val initials = remember(auth.email, auth.displayName) {
-        val src = auth.displayName?.takeIf { it.isNotBlank() } ?: auth.email ?: "?"
-        src.split(" ", ".", "@").filter { it.isNotBlank() }.take(2).joinToString("") { it.first().uppercase() }.ifBlank { "?" }
-    }
 
     var autoConnect by remember { mutableStateOf(true) }
     var screenOff   by remember { mutableStateOf(true) }
@@ -123,13 +114,13 @@ fun SettingsScreen(
     val callPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { callAccessGranted = it }
-    val selectedTheme by OpenDashThemeController.variant.collectAsState()
+    val themeMode by OpenDashThemeController.mode.collectAsState()
+    val dynamicColor by OpenDashThemeController.dynamic.collectAsState()
     remember(ctx) {
         CurrencySettings.init(ctx)
         true
     }
     val selectedCurrency by CurrencySettings.currency.collectAsState()
-    var themeMenuExpanded by remember { mutableStateOf(false) }
     var currencyMenuExpanded by remember { mutableStateOf(false) }
     var pendingWallpaperUri by remember { mutableStateOf<Uri?>(null) }
     var pendingWallpaperPreview by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
@@ -249,22 +240,6 @@ fun SettingsScreen(
             return@Column
         }
 
-        // Account card
-        SectionLabel("Account")
-        SettingsGroup(padding = 14.dp) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SettingsIconBubble(OpenDashIcons.Person)
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    auth.displayName?.takeIf { it.isNotBlank() }?.let {
-                        Text(it, color = MaterialTheme.colorScheme.onSurface, fontSize = 15.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
-                    }
-                    Text(email, color = if (auth.displayName.isNullOrBlank()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = if (auth.displayName.isNullOrBlank()) 15.5.sp else 12.5.sp, fontWeight = if (auth.displayName.isNullOrBlank()) FontWeight.SemiBold else FontWeight.Normal, fontFamily = GeistFamily, modifier = Modifier.padding(top = 2.dp))
-                }
-                Icon(OpenDashIcons.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
-            }
-        }
-
         SectionLabel("Connection")
         SettingsGroup(padding = 6.dp) {
             SettingRow(OpenDashIcons.Bt, "Tripper Dash",
@@ -329,94 +304,52 @@ fun SettingsScreen(
             )
         }
 
-        SectionLabel("Theming")
+        SectionLabel("Appearance")
         SettingsGroup(padding = 6.dp) {
-            Box(Modifier.fillMaxWidth()) {
-                SettingRow(
-                    icon = OpenDashIcons.Palette,
-                    title = selectedTheme.name,
-                    sub = selectedTheme.theme,
-                    control = {
-                        Icon(
-                            OpenDashIcons.ChevronRight,
-                            contentDescription = "Choose theme",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                    last = true,
-                    onClick = { themeMenuExpanded = true },
-                )
-                DropdownMenu(
-                    expanded = themeMenuExpanded,
-                    onDismissRequest = { themeMenuExpanded = false },
-                    modifier = Modifier
-                        .fillMaxWidth(0.94f)
-                        .background(MaterialTheme.colorScheme.surfaceContainerLow),
-                ) {
-                    OpenDashThemeVariants.forEach { variant ->
-                        DropdownMenuItem(
-                            modifier = Modifier
-                                .padding(horizontal = 7.dp, vertical = 4.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(MaterialTheme.colorScheme.surfaceContainer)
-                                .border(
-                                    1.dp,
-                                    if (selectedTheme.name == variant.name) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                                    RoundedCornerShape(16.dp),
-                                ),
-                            text = {
-                                Column {
-                                    Text(
-                                        variant.name,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontFamily = GeistFamily,
+            SettingRow(
+                icon = OpenDashIcons.Palette,
+                title = "Theme",
+                sub = themeMode.label,
+                control = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ThemeMode.entries.forEach { m ->
+                            val active = themeMode == m
+                            Text(
+                                when (m) {
+                                    ThemeMode.SYSTEM -> "Auto"
+                                    ThemeMode.LIGHT -> "Light"
+                                    ThemeMode.DARK -> "Dark"
+                                },
+                                color = if (active) MaterialTheme.colorScheme.onPrimaryContainer
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                                fontFamily = GeistFamily,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (active) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surfaceContainerHigh
                                     )
-                                    Text(
-                                        variant.theme,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontSize = 12.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                        modifier = Modifier.padding(top = 6.dp),
-                                    ) {
-                                        variant.colors.forEach { color ->
-                                            Box(
-                                                Modifier
-                                                    .size(15.dp)
-                                                    .clip(CircleShape)
-                                                    .background(color)
-                                                    .border(
-                                                        1.dp,
-                                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.7f),
-                                                        CircleShape,
-                                                    ),
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            trailingIcon = {
-                                if (selectedTheme.name == variant.name) {
-                                    Icon(
-                                        OpenDashIcons.Check,
-                                        contentDescription = "Selected",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            },
-                            onClick = {
-                                OpenDashThemeController.select(ctx, variant)
-                                themeMenuExpanded = false
-                            },
-                        )
+                                    .clickable { OpenDashThemeController.setMode(ctx, m) }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                            )
+                        }
                     }
-                }
-            }
+                },
+            )
+            SettingRow(
+                icon = OpenDashIcons.Zap,
+                title = "Material You colours",
+                sub = "Tint the app from your wallpaper (Android 12+)",
+                control = {
+                    androidx.compose.material3.Switch(
+                        checked = dynamicColor,
+                        onCheckedChange = { OpenDashThemeController.setDynamic(ctx, it) },
+                    )
+                },
+                last = true,
+            )
         }
 
         SectionLabel("Dash Wallpaper")
@@ -678,38 +611,10 @@ fun SettingsScreen(
             }
         }
 
-        SectionLabel("Sync")
-        SettingsGroup(padding = 6.dp) {
-            val (syncTitle, syncSub) = when {
-                !auth.syncAvailable -> "Local only" to "Add your own Firebase project to sync across devices"
-                auth.isSignedIn     -> "Synced" to (auth.email ?: "Signed in")
-                else                -> "Not signed in" to "Sign in to sync across devices · data stays local until then"
-            }
-            SettingRow(OpenDashIcons.Sync, syncTitle, syncSub,
-                control = {
-                    OpenDashChip(
-                        if (auth.isSignedIn) "On" else "Off",
-                        if (auth.isSignedIn) ChipTone.Gold else ChipTone.Off, dot = true,
-                    )
-                }, last = true)
-        }
-
         Spacer(Modifier.height(22.dp))
 
-        if (auth.isSignedIn) {
-            OpenDashBtn(
-                "Sign out",
-                onClick = { authViewModel.signOut(); onSignedOut() },
-                icon = OpenDashIcons.Power,
-                variant = BtnVariant.Danger,
-                size = BtnSize.Md,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(6.dp))
-        }
-
         Text(
-            "OpenDash v${BuildConfig.VERSION_NAME} · ${if (!auth.syncAvailable) "local only" else if (auth.isSignedIn) "sync on" else "sync off"}",
+            "OpenDash v${BuildConfig.VERSION_NAME} · local only",
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, fontFamily = GeistMonoFamily,
             modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 10.dp),
         )
@@ -725,9 +630,8 @@ private fun SettingsGroup(
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        shadowElevation = 0.dp,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shadowElevation = 1.dp,
     ) {
         Column(Modifier.padding(padding), content = content)
     }
@@ -748,7 +652,7 @@ private fun SettingsIconBubble(icon: ImageVector, modifier: Modifier = Modifier)
 
 @Composable
 private fun SettingsDivider(modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+    Box(modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)))
 }
 
 @Composable
@@ -933,6 +837,7 @@ private fun DashCropPreview(
     modifier: Modifier = Modifier,
     showGuide: Boolean = true,
 ) {
+    val guideColor = Gold
     Canvas(
         modifier = modifier
             .aspectRatio(526f / 300f)
@@ -979,7 +884,7 @@ private fun DashCropPreview(
             )
         }
         if (showGuide) {
-            drawDashVisibilityGuide()
+            drawDashVisibilityGuide(guideColor)
         }
     }
 }
@@ -996,7 +901,9 @@ private fun String.toWallpaperFit(): DashWallpaperFit = when (this) {
     else -> DashWallpaperFit.CROP
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDashVisibilityGuide() {
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDashVisibilityGuide(
+    accent: androidx.compose.ui.graphics.Color,
+) {
     val visibleRect = androidx.compose.ui.geometry.Rect(
         left = size.width * 0.02f,
         top = 0f,
@@ -1004,7 +911,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDashVisibilityG
         bottom = size.height * 1.78f,
     )
     drawArc(
-        color = Gold.copy(alpha = 0.95f),
+        color = accent.copy(alpha = 0.95f),
         startAngle = 180f,
         sweepAngle = 180f,
         useCenter = false,
@@ -1013,7 +920,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDashVisibilityG
         style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
     )
     drawLine(
-        color = Gold.copy(alpha = 0.7f),
+        color = accent.copy(alpha = 0.7f),
         start = Offset(size.width * 0.02f, size.height - 1f),
         end = Offset(size.width * 0.98f, size.height - 1f),
         strokeWidth = 2.dp.toPx(),

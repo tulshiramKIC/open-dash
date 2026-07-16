@@ -77,50 +77,32 @@ fun GarageScreen(
     ) {
         ScreenHeader(title = "Garage")
 
-        OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 14.dp) {
-            Eyebrow("Active vehicle")
-            Text(
-                ui.activeVehicleName,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-                fontFamily = GeistFamily,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            Text(
-                "${"%,d".format(ui.odometerKm)} km on odometer",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 13.sp,
-                modifier = Modifier.padding(top = 2.dp),
-            )
-        }
+        // Vehicle info + management (was the separate Vehicles tab) — active vehicle
+        // leads with PUC/insurance/service details; others follow with "Set current".
+        Eyebrow("Vehicle", Modifier.padding(bottom = 8.dp, start = 4.dp))
+        VehiclesSection()
 
         Spacer(Modifier.height(14.dp))
-        OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 18.dp) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.size(52.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
-                ) {
-                    Icon(OpenDashIcons.Gauge, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
-                }
-                Spacer(Modifier.width(16.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Latest odometer reading", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                    Text(
-                        "${"%,d".format(ui.odometerKm)} km",
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        fontFamily = GeistMonoFamily,
-                    )
-                }
-                OpenDashIconBtn(OpenDashIcons.Edit, onClick = { showOdometer = true })
-            }
+        // Live stats — odometer tile opens the edit dialog.
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OpenDashStatTile(
+                icon = OpenDashIcons.Gauge,
+                value = "%,d".format(ui.odometerKm),
+                unit = "km",
+                label = "Odometer · tap to update",
+                onClick = { showOdometer = true },
+                modifier = Modifier.weight(1f),
+            )
+            OpenDashStatTile(
+                icon = OpenDashIcons.Fuel,
+                value = ui.avgKmplLast5?.let { "%.1f".format(it) } ?: "—",
+                unit = if (ui.avgKmplLast5 != null) "km/l" else "",
+                label = if (ui.avgKmplLast5 != null) "Last 5 fuel-ups" else "No fuel data yet",
+                onClick = {},
+                modifier = Modifier.weight(1f),
+            )
         }
 
-        Spacer(Modifier.height(24.dp))
-        MileageSummary(ui.avgKmplLast5)
         GarageSectionHeader("Spare parts", "Condition and service distance for ${ui.activeVehicleName}")
         MaintenanceTab(ui, onSelect = { selectedPart = it }, onLog = { showLog = true }, onAdd = { showAddService = true })
     }
@@ -154,32 +136,6 @@ fun GarageScreen(
 }
 
 @Composable
-private fun MileageSummary(avgKmpl: Double?) {
-    OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 18.dp) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.size(52.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
-            ) {
-                Icon(OpenDashIcons.Fuel, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
-            }
-            Spacer(Modifier.width(16.dp))
-            Column {
-                Text("Avg. mileage of last 5 fuel-ups", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                Text(
-                    avgKmpl?.let { "%.2f km/l".format(it) } ?: "Not enough fuel data",
-                    color = MaterialTheme.colorScheme.primary,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = GeistMonoFamily,
-                    modifier = Modifier.padding(top = 3.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun GarageSectionHeader(title: String, subtitle: String) {
     Column(Modifier.padding(top = 22.dp, bottom = 10.dp, start = 2.dp, end = 2.dp)) {
         Text(title, color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
@@ -200,29 +156,49 @@ private fun MaintenanceTab(ui: GarageUi, onSelect: (MaintRow) -> Unit, onLog: ()
         ui.maint.forEachIndexed { i, row ->
             if (i > 0) OpenDashDivider(Modifier.padding(horizontal = 4.dp))
             val color = toneColor[row.tone] ?: MaterialTheme.colorScheme.primary
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
+            // Wear toward the interval: how much of the service distance is used up.
+            val used = (row.item.intervalKm - row.remainingKm).coerceAtLeast(0)
+            val wear = if (row.item.intervalKm > 0) (used.toFloat() / row.item.intervalKm).coerceIn(0f, 1f) else 0f
+            Column(
                 modifier = Modifier.fillMaxWidth().clickable { onSelect(row) }.padding(horizontal = 6.dp, vertical = 12.dp),
             ) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh).border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(11.dp))) {
-                    Icon(iconFor(row.item.iconKey), null, tint = color, modifier = Modifier.size(20.dp))
-                }
-                Spacer(Modifier.width(13.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(row.item.name, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
-                    Text("Last · ${"%,d".format(row.item.lastDoneOdoKm)} km", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(dueText(row), color = color, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
-                    row.remainingDays?.let { days ->
-                        Text(
-                            "or ${days.coerceAtLeast(0)} days",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
+                        Icon(iconFor(row.item.iconKey), null, tint = color, modifier = Modifier.size(20.dp))
                     }
-                    Icon(OpenDashIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp).padding(top = 4.dp))
+                    Spacer(Modifier.width(13.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(row.item.name, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
+                        Text("Last · ${"%,d".format(row.item.lastDoneOdoKm)} km", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(dueText(row), color = color, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
+                        row.remainingDays?.let { days ->
+                            Text(
+                                "or ${days.coerceAtLeast(0)} days",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                    Icon(OpenDashIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp).padding(start = 4.dp))
+                }
+                Spacer(Modifier.height(10.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(5.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(wear)
+                            .fillMaxHeight()
+                            .clip(CircleShape)
+                            .background(color),
+                    )
                 }
             }
         }

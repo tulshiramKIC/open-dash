@@ -35,6 +35,7 @@ class MapRenderer(private val tiles: TileProvider) {
         val destLng: Double? = null,
         val destName: String? = null,
         val route: List<GeoPoint> = emptyList(),
+        val alternates: List<List<GeoPoint>> = emptyList(), // drawn faded under [route]
         val maneuverText: String? = null,  // e.g. "Turn left · 400 m"
         val remainingText: String? = null, // e.g. "186 km"
         val tilt3d: Boolean = false,       // perspective 3D view (nav heading-up only)
@@ -61,6 +62,11 @@ class MapRenderer(private val tiles: TileProvider) {
     private val routePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = routeBlue; style = Paint.Style.STROKE
         strokeWidth = 6f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+    }
+    // Alternative routes: grey, thinner, drawn under the active blue route.
+    private val altRoutePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(154, 160, 166); style = Paint.Style.STROKE
+        strokeWidth = 5f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
     }
     private val dotPaint     = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 22f; isFakeBoldText = true }
@@ -144,6 +150,15 @@ class MapRenderer(private val tiles: TileProvider) {
             val dstT = (ty * ts - top).toFloat()
             tmpRect.set(dstL, dstT, dstL + ts, dstT + ts)
             canvas.drawBitmap(bmp, null, tmpRect, tilePaint)
+        }
+
+        // ── Alternative routes (grey, under the active route) ──
+        for (alt in f.alternates) {
+            if (alt.size < 2) continue
+            routePath.reset()
+            routePath.moveTo(sx(alt[0].lng), sy(alt[0].lat))
+            for (i in 1 until alt.size) routePath.lineTo(sx(alt[i].lng), sy(alt[i].lat))
+            canvas.drawPath(routePath, altRoutePaint)
         }
 
         // ── Road route polyline ──

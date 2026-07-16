@@ -70,19 +70,25 @@ class DashKeepAliveService : Service() {
         createChannel()
         // The LOCATION type is what lets GPS keep updating with the screen off —
         // without it Android 14+ freezes location for backgrounded apps and the
-        // rider marker sticks at its first fix.
+        // rider marker sticks at its first fix. But declaring it WITHOUT the runtime
+        // location grant is a fatal SecurityException on 14+, so only include it when
+        // the permission is actually held (LocationTracker no-ops without it anyway).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID, buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
-            )
+            var fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            if (hasLocationPermission()) fgsType = fgsType or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            startForeground(NOTIF_ID, buildNotification(), fgsType)
         } else {
             startForeground(NOTIF_ID, buildNotification())
         }
         acquireLocks()
         DebugLog.i(TAG) { "Foreground service up — wake+wifi locks held" }
     }
+
+    private fun hasLocationPermission(): Boolean =
+        checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
 
     private fun acquireLocks() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager

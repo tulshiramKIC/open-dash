@@ -47,7 +47,7 @@ fun RidesScreen(ridesViewModel: RidesViewModel = viewModel()) {
             .padding(18.dp)
             .padding(bottom = 24.dp),
     ) {
-        ScreenHeader(eyebrow = "Telemetry", title = "Ride history")
+        ScreenHeader(title = "Ride history")
 
         if (rides.isEmpty()) {
             EmptyRides()
@@ -137,6 +137,8 @@ private fun MiniStat(value: String, label: String) {
 
 @Composable
 private fun TrackSketch(points: List<com.example.opendash.dash.nav.GeoPoint>, modifier: Modifier) {
+    val trackColor = Gold
+    val startDot = TextHi
     Canvas(modifier) {
         val minLat = points.minOf { it.lat }; val maxLat = points.maxOf { it.lat }
         val minLng = points.minOf { it.lng }; val maxLng = points.maxOf { it.lng }
@@ -149,12 +151,12 @@ private fun TrackSketch(points: List<com.example.opendash.dash.nav.GeoPoint>, mo
             val y = (size.height - (p.lat - minLat) / span * size.height).toFloat()
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-        drawPath(path, Gold, style = Stroke(width = 3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        // start (green-ish) + end (gold) dots
+        drawPath(path, trackColor, style = Stroke(width = 3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        // start + end dots
         val first = points.first(); val last = points.last()
-        drawCircle(TextHi, 2.5f, Offset(((first.lng - minLng) / span * size.width).toFloat(),
+        drawCircle(startDot, 2.5f, Offset(((first.lng - minLng) / span * size.width).toFloat(),
             (size.height - (first.lat - minLat) / span * size.height).toFloat()))
-        drawCircle(Gold, 2.5f, Offset(((last.lng - minLng) / span * size.width).toFloat(),
+        drawCircle(trackColor, 2.5f, Offset(((last.lng - minLng) / span * size.width).toFloat(),
             (size.height - (last.lat - minLat) / span * size.height).toFloat()))
     }
 }

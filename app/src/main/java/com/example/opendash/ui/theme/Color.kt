@@ -1,32 +1,53 @@
 package com.example.opendash.ui.theme
 
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 
-val Bg0 = Color(0xFF070707)
-val Bg1 = Color(0xFF101010)
-val Surf1 = Color(0xFF1A1A1B)
-val Surf2 = Color(0xFF242426)
-val Surf3 = Color(0xFF302B25)
+/**
+ * Legacy palette names, bridged onto Material theme roles so every screen that
+ * still references them follows the active light/dark scheme automatically.
+ * New code should use MaterialTheme.colorScheme directly; these aliases exist
+ * so unmigrated screens restyle for free and can be cleaned up screen-by-screen.
+ */
 
-val Gold = Color(0xFFB78B4B)
-val GoldBright = Color(0xFFC6A46A)
-val GoldDeep = Color(0xFF8B6439)
-val GoldTint = Color(0x33B78B4B)
-val GoldTint2 = Color(0x22C6A46A)
-val GoldGlow = Color(0x55C6A46A)
-val OnGold = Color(0xFF070707)
+private val scheme
+    @Composable get() = MaterialTheme.colorScheme
 
-val TextHi = Color(0xFFC8C4BD)
-val TextMid = Color(0xFFA89B88)
-val TextLo = Color(0xFF716A61)
+// Backgrounds and surfaces
+val Bg0: Color @Composable get() = scheme.background
+val Bg1: Color @Composable get() = scheme.surface
+val Surf1: Color @Composable get() = scheme.surfaceContainer
+val Surf2: Color @Composable get() = scheme.surfaceContainerHigh
+val Surf3: Color @Composable get() = scheme.surfaceContainerHighest
+val MapBase: Color @Composable get() = scheme.surfaceContainerLow
 
-val Line = Color(0x2EC6A46A)
-val Line2 = Color(0x1FC8C4BD)
-val Line3 = Color(0x383F3327)
-val MapBase = Color(0xFF111315)
-val Offline = Color(0xFF898989)
+// Accent (historically gold; now the theme primary)
+val Gold: Color @Composable get() = scheme.primary
+val GoldBright: Color @Composable get() = scheme.primary
+val GoldDeep: Color @Composable get() = lerp(scheme.primary, scheme.primaryContainer, 0.55f)
+val GoldTint: Color @Composable get() = scheme.primaryContainer
+val GoldTint2: Color @Composable get() = scheme.primary.copy(alpha = 0.14f)
+val GoldGlow: Color @Composable get() = scheme.primary.copy(alpha = 0.30f)
+val OnGold: Color @Composable get() = scheme.onPrimary
 
-val Alert = Color(0xFFFF6B6B)
-val Warn = Color(0xFFFFC857)
-val Danger = Color(0xFFFF6B6B)
-val Ok = Color(0xFF5EE0A0)
+// Text
+val TextHi: Color @Composable get() = scheme.onSurface
+val TextMid: Color @Composable get() = scheme.onSurfaceVariant
+val TextLo: Color @Composable get() = scheme.outline
+
+// Hairlines / dividers
+val Line: Color @Composable get() = scheme.outlineVariant
+val Line2: Color @Composable get() = scheme.outlineVariant
+val Line3: Color @Composable get() = scheme.outlineVariant.copy(alpha = 0.6f)
+
+// Status
+val Offline: Color @Composable get() = scheme.outline
+val Alert: Color @Composable get() = scheme.error
+val Danger: Color @Composable get() = scheme.error
+val Warn: Color @Composable get() = scheme.tertiary
+val Ok: Color
+    @Composable get() =
+        if (scheme.background.luminance() < 0.5f) Color(0xFF6DD58C) else Color(0xFF146C2E)

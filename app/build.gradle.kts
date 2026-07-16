@@ -21,6 +21,16 @@ val localProperties = Properties().apply {
 val googleWebClientId = providers.gradleProperty("GOOGLE_WEB_CLIENT_ID").orNull
     ?: localProperties.getProperty("GOOGLE_WEB_CLIENT_ID").orEmpty()
 
+// Mapbox Directions access token (bring-your-own): put MAPBOX_ACCESS_TOKEN in local.properties
+// or pass it as a Gradle property. Routing is disabled at runtime when this is blank.
+val mapboxAccessToken = providers.gradleProperty("MAPBOX_ACCESS_TOKEN").orNull
+    ?: localProperties.getProperty("MAPBOX_ACCESS_TOKEN").orEmpty()
+
+// Google Maps Platform key (bring-your-own): put GOOGLE_MAPS_API_KEY in local.properties.
+// Used for Places search (autocomplete + details). Search falls back to Mapbox when blank.
+val googleMapsApiKey = providers.gradleProperty("GOOGLE_MAPS_API_KEY").orNull
+    ?: localProperties.getProperty("GOOGLE_MAPS_API_KEY").orEmpty()
+
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 
@@ -47,6 +57,18 @@ android {
             "String",
             "GOOGLE_WEB_CLIENT_ID",
             "\"${googleWebClientId.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
+        )
+
+        buildConfigField(
+            "String",
+            "MAPBOX_ACCESS_TOKEN",
+            "\"${mapboxAccessToken.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
+        )
+
+        buildConfigField(
+            "String",
+            "GOOGLE_MAPS_API_KEY",
+            "\"${googleMapsApiKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
         )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

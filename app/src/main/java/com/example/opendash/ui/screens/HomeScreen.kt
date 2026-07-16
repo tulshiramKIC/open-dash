@@ -2,7 +2,6 @@ package com.example.opendash.ui.screens
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -10,13 +9,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -24,33 +26,33 @@ import com.example.opendash.ui.OpenDashIcons
 import com.example.opendash.ui.components.*
 import com.example.opendash.ui.theme.*
 import com.example.opendash.viewmodel.ConnectionState
+import com.example.opendash.viewmodel.GarageViewModel
 import com.example.opendash.viewmodel.RidesViewModel
 import com.example.opendash.viewmodel.RouteViewModel
-import com.example.opendash.data.VehicleStore
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
+/**
+ * Home is a dashboard: compact status header for the bike + dash link, a 2×2 grid
+ * of live stat tiles fed from across the app (odometer, fuel economy, last ride,
+ * next service), then saved destinations. Each tile deep-links to its screen.
+ */
 @Composable
 fun HomeScreen(
     conn: ConnectionState,
     onNavigate: (String) -> Unit,
     routeViewModel: RouteViewModel = viewModel(),
     ridesViewModel: RidesViewModel = viewModel(),
+    garageViewModel: GarageViewModel = viewModel(),
 ) {
     val saved by routeViewModel.saved.collectAsState()
     val rides by ridesViewModel.rides.collectAsState()
-    val vehicles by VehicleStore.vehicles.collectAsState()
-    val activeVehicleId by VehicleStore.activeVehicleId.collectAsState()
-    val activeVehicle = vehicles.firstOrNull { it.id == activeVehicleId } ?: vehicles.first()
-    val status = when (conn) {
-        ConnectionState.Connected -> Triple("Connected", "Streaming to Tripper Dash", Gold)
-        ConnectionState.Searching -> Triple("Searching…", "Looking for Tripper Dash", Warn)
-        ConnectionState.Offline   -> Triple("Offline", "Dash not detected", Offline)
-    }
-    val (statusLabel, statusSub, statusDot) = status
+    val garage by garageViewModel.ui.collectAsState()
 
-    // Pulse animation for connected dot
+    val (statusText, statusColor) = when (conn) {
+        ConnectionState.Connected -> "Streaming to dash" to Ok
+        ConnectionState.Searching -> "Looking for dash…" to Warn
+        ConnectionState.Offline   -> "Dash not connected" to MaterialTheme.colorScheme.outline
+    }
+
     val infiniteTransition = rememberInfiniteTransition(label = "dot-pulse")
     val pulseAlpha by infiniteTransition.animateFloat(
         1f, 0.35f,
@@ -58,98 +60,102 @@ fun HomeScreen(
         label = "pulse",
     )
 
+    val lastRide = rides.firstOrNull()
+    val nextService = garage.maint.minByOrNull { it.remainingKm }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(18.dp)
-            .padding(bottom = 24.dp),
+            .padding(horizontal = 20.dp)
+            .padding(top = 8.dp, bottom = 28.dp),
     ) {
         ScreenHeader(
             wordmark = true,
+            trailing = {
+                OpenDashIconBtn(OpenDashIcons.Gear, onClick = { onNavigate("settings") }, size = 42.dp)
+            },
         )
 
-        // Connection hero card
+        // ── Status header: bike + dash state + primary actions ──
         OpenDashCard(
             glow = conn == ConnectionState.Connected,
-            padding = 20.dp,
+            padding = 18.dp,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularDash(
-                    size = 118.dp,
-                    pan = Offset.Zero,
-                    zoom = 1f,
-                    compact = true,
-                    live = conn == ConnectionState.Connected,
-                )
-
-                Spacer(Modifier.width(18.dp))
-
                 Column(Modifier.weight(1f)) {
-                    Eyebrow("Compatible Tripper Dash")
-
-                    Spacer(Modifier.height(7.dp))
-
+                    Text(
+                        garage.activeVehicleName,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 21.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = GeistFamily,
+                        letterSpacing = (-0.3).sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
-                            Modifier.size(9.dp).clip(CircleShape).background(
-                                statusDot.copy(alpha = if (conn == ConnectionState.Connected) pulseAlpha else 1f)
+                            Modifier.size(8.dp).clip(CircleShape).background(
+                                statusColor.copy(alpha = if (conn == ConnectionState.Connected) pulseAlpha else 1f)
                             )
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            statusLabel, color = TextHi, fontSize = 19.sp,
-                            fontWeight = FontWeight.Bold, fontFamily = GeistFamily,
-                            letterSpacing = (-0.38).sp,
+                            statusText,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.5.sp,
+                            fontFamily = GeistFamily,
                         )
                     }
-
-                    Spacer(Modifier.height(4.dp))
-
-                    Text(statusSub, color = TextMid, fontSize = 13.sp)
-
-                    Spacer(Modifier.height(12.dp))
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OpenDashChip(activeVehicle.title, ChipTone.Gold, icon = OpenDashIcons.Motor)
-                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                ) {
+                    Icon(
+                        OpenDashIcons.Motor, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(24.dp),
+                    )
                 }
             }
-        }
-
-        Spacer(Modifier.height(18.dp))
-
-        Eyebrow("OpenDash", Modifier.padding(bottom = 8.dp, start = 4.dp))
-        OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 6.dp) {
-            OpenDashRow(
-                "Start navigation",
-                icon = OpenDashIcons.Navi,
-                sub = "Pick a destination and send it to the dash",
-                trailingIcon = true,
-                onClick = { onNavigate("route") },
-            )
-            OpenDashDivider(Modifier.padding(horizontal = 4.dp))
-            OpenDashRow(
-                if (conn == ConnectionState.Connected) "Dash view" else "Connect to dash",
-                icon = if (conn == ConnectionState.Connected) OpenDashIcons.Dash else OpenDashIcons.Wifi,
-                sub = if (conn == ConnectionState.Connected) "Open the live projection controls" else "Pair, authenticate, and start streaming",
-                trailingIcon = true,
-                onClick = { onNavigate("dash") },
-            )
-        }
-
-        Spacer(Modifier.height(18.dp))
-
-        Eyebrow("Saved destinations", Modifier.padding(bottom = 6.dp, start = 4.dp))
-
-        if (saved.isEmpty()) {
-            OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 16.dp) {
-                Text(
-                    "No saved destinations yet. Share a place from Google Maps, then tap “Save this destination”.",
-                    color = TextLo, fontSize = 13.sp,
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OpenDashBtn(
+                    label = if (conn == ConnectionState.Connected) "Dash view" else "Connect dash",
+                    icon = if (conn == ConnectionState.Connected) OpenDashIcons.Dash else OpenDashIcons.Wifi,
+                    onClick = { onNavigate("dash") },
+                    size = BtnSize.Sm,
+                    modifier = Modifier.weight(1f),
+                )
+                OpenDashBtn(
+                    label = "Navigate",
+                    icon = OpenDashIcons.Navi,
+                    variant = BtnVariant.Secondary,
+                    onClick = { onNavigate("route") },
+                    size = BtnSize.Sm,
+                    modifier = Modifier.weight(1f),
                 )
             }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // ── Saved destinations ──
+        HomeSection("Saved destinations")
+        if (saved.isEmpty()) {
+            EmptyHint(
+                icon = OpenDashIcons.LocationPin,
+                title = "Nothing saved yet",
+                sub = "Share a place from Google Maps, or search in Navigate",
+                onClick = { onNavigate("route") },
+            )
         } else {
             OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 6.dp) {
                 saved.forEachIndexed { i, loc ->
@@ -164,35 +170,29 @@ fun HomeScreen(
             }
         }
 
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(24.dp))
 
-        Eyebrow("Rides", Modifier.padding(bottom = 6.dp, start = 4.dp))
-        OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 6.dp) {
-            if (rides.isEmpty()) {
-                OpenDashRow(
-                    "No rides recorded yet",
-                    icon = OpenDashIcons.History,
-                    sub = "Connected rides appear here automatically",
-                    trailingIcon = false,
-                    onClick = {},
-                )
-            } else {
-                val totalKm = rides.sumOf { it.distanceKm }
-                val totalMinutes = rides.sumOf { it.durationSec } / 60
-                OpenDashRow(
-                    "${rides.size} rides · %.1f km".format(totalKm),
-                    icon = OpenDashIcons.History,
-                    sub = "$totalMinutes min recorded · View full history",
-                    trailingIcon = true,
-                    onClick = { onNavigate("rides") },
-                )
-                rides.take(3).forEach { ride ->
-                    OpenDashDivider(Modifier.padding(horizontal = 4.dp))
+        // ── Recent rides ──
+        HomeSection(
+            "Recent rides",
+            action = if (rides.isNotEmpty()) "View all" else null,
+            onAction = { onNavigate("rides") },
+        )
+        if (rides.isEmpty()) {
+            EmptyHint(
+                icon = OpenDashIcons.History,
+                title = "No rides yet",
+                sub = "Rides are recorded automatically while connected",
+            )
+        } else {
+            OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 6.dp) {
+                rides.take(3).forEachIndexed { i, ride ->
+                    if (i > 0) OpenDashDivider(Modifier.padding(horizontal = 4.dp))
                     OpenDashRow(
-                        "%.1f km · %s".format(ride.distanceKm, formatRideDuration(ride.durationSec)),
+                        "%.1f km".format(ride.distanceKm),
                         icon = OpenDashIcons.Navi,
                         sub = formatRideDate(ride.startMs),
-                        trailingIcon = false,
+                        right = formatRideDuration(ride.durationSec),
                         onClick = { onNavigate("rides") },
                     )
                 }
@@ -202,10 +202,93 @@ fun HomeScreen(
 }
 
 private fun formatRideDate(timeMs: Long): String =
-    SimpleDateFormat("d MMM yyyy, h:mm a", Locale.getDefault()).format(Date(timeMs))
+    java.text.SimpleDateFormat("d MMM yyyy, h:mm a", java.util.Locale.getDefault()).format(java.util.Date(timeMs))
 
 private fun formatRideDuration(seconds: Long): String {
     val hours = seconds / 3600
     val minutes = (seconds % 3600) / 60
     return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+}
+
+/** Sentence-case section header with an optional trailing action. */
+@Composable
+private fun HomeSection(title: String, action: String? = null, onAction: (() -> Unit)? = null) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 12.dp, start = 2.dp, end = 2.dp),
+    ) {
+        Text(
+            title,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = GeistFamily,
+            letterSpacing = (-0.1).sp,
+            modifier = Modifier.weight(1f),
+        )
+        if (action != null && onAction != null) {
+            Text(
+                action,
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = GeistFamily,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable(onClick = onAction)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
+
+/** Compact empty state: icon bubble, one-line hint, optional tap-through. */
+@Composable
+private fun EmptyHint(
+    icon: ImageVector,
+    title: String,
+    sub: String,
+    onClick: (() -> Unit)? = null,
+) {
+    OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 16.dp, onClick = onClick) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            ) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 14.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = GeistFamily,
+                )
+                Text(
+                    sub,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.5.sp,
+                    fontFamily = GeistFamily,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            if (onClick != null) {
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    OpenDashIcons.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
 }

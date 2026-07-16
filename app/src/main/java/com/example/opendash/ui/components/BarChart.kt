@@ -22,6 +22,7 @@ fun OpenDashBarChart(
     data: List<BarEntry>,
     modifier: Modifier = Modifier,
     height: Dp = 108.dp,
+    valueFmt: (Float) -> String = { "%.0f".format(it) },
 ) {
     if (data.isEmpty()) return
     val maxVal = data.maxOf { it.value } * 1.12f
@@ -37,6 +38,8 @@ fun OpenDashBarChart(
             val pct = entry.value / maxVal
             val best = entry.value == data.maxOf { it.value }
             val barH = (height.value - 26f) * pct
+            val barBrush = Brush.verticalGradient(listOf(Gold, GoldDeep))
+            val trackColor = Surf3
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -44,7 +47,7 @@ fun OpenDashBarChart(
                 modifier = Modifier.weight(1f),
             ) {
                 Text(
-                    text = entry.value.toString(),
+                    text = valueFmt(entry.value),
                     color = if (best) Gold else TextLo,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -58,13 +61,8 @@ fun OpenDashBarChart(
                         .height(barH.dp)
                         .clip(RoundedCornerShape(6.dp))
                         .drawBehind {
-                            if (best) {
-                                drawRect(
-                                    brush = Brush.verticalGradient(listOf(Gold, GoldDeep)),
-                                )
-                            } else {
-                                drawRect(color = Surf3)
-                            }
+                            if (best) drawRect(brush = barBrush)
+                            else drawRect(color = trackColor)
                         },
                 )
 

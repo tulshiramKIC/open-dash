@@ -1,50 +1,98 @@
 package com.example.opendash.dash.nav
 
+import com.example.opendash.BuildConfig
 import com.example.opendash.util.DebugLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.URLEncoder
 import java.net.URL
 
 /**
- * Fetches a road route from the public OSRM demo server. Called at planning time
+ * Fetches road routes from the Mapbox Directions API. Called at planning time
  * (destination shared) while the phone still has internet — the result is cached
  * so riding can proceed offline. Driving profile suits the Himalayan fine.
+ *
+ * Mapbox Directions is OSRM-based, so the response shape (routes[].geometry polyline,
+ * legs[].steps[].maneuver{type,modifier,location}, distance, duration) matches what the
+ * nav model already expects — [ManeuverType.fromOsrm] handles the same type/modifier
+ * vocabulary. Requesting `alternatives=true` returns up to ~3 distinct routes.
+ *
+ * Needs a Mapbox access token (BuildConfig.MAPBOX_ACCESS_TOKEN, bring-your-own). When the
+ * token is blank, routing is disabled and callers get an empty result / null.
  */
 object Router {
-    private const val TAG = "Router"
-    private const val BASE = "https://router.project-osrm.org/route/v1/driving"
-    private const val UA = "OpenDash/1.1 (personal motorcycle nav; single user)"
-
-    suspend fun route(from: GeoPoint, to: GeoPoint): Route? = withContext(Dispatchers.IO) {
-        val url = "$BASE/${from.lng},${from.lat};${to.lng},${to.lat}" +
-                "?overview=full&geometries=polyline&steps=true&annotations=false"
-        try {
-            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                setRequestProperty("User-Agent", UA)
-                connectTimeout = 10_000
-                readTimeout = 10_000
-            }
-            val body = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
-            conn.disconnect()
-            parse(body)
-        } catch (e: Exception) {
-            DebugLog.w(TAG) { "route() failed: ${e.message}" }
-            null
-        }
+    /**
+     * Mapbox has no motorcycle profile, and "cycling" is bicycles — cycle paths and
+     * pedal-speed ETAs. Both modes use the car profile; Bike just excludes motorways,
+     * since expressways ban two-wheelers while every other road rides like a car.
+     */
+    enum class TravelMode(val label: String, val exclude: String?) {
+        CAR("Car", null),
+        BIKE("Bike", "motorway"),
     }
 
-    private fun parse(json: String): Route? {
+    /** Mode picked on the route screen; dash-side reroutes reuse it via the default arg. */
+    @Volatile var currentMode: TravelMode = TravelMode.BIKE
+
+    private const val TAG = "Router"
+    private const val BASE = "https://api.mapbox.com/directions/v5/mapbox"
+    private const val UA = "OpenDash/1.3 (personal motorcycle nav; single user)"
+
+    /** Single best route (backwards-compatible with callers that don't need alternatives). */
+    suspend fun route(
+        from: GeoPoint,
+        to: GeoPoint,
+        mode: TravelMode = currentMode,
+    ): Route? = routes(from, to, alternatives = false, mode = mode).firstOrNull()
+
+    /**
+     * Primary route plus alternatives. Element [0] is Mapbox's primary/recommended route;
+     * the rest are alternatives (may be empty). Empty list on error or missing token.
+     */
+    suspend fun routes(
+        from: GeoPoint,
+        to: GeoPoint,
+        alternatives: Boolean = true,
+        mode: TravelMode = currentMode,
+    ): List<Route> =
+        withContext(Dispatchers.IO) {
+            val token = BuildConfig.MAPBOX_ACCESS_TOKEN
+            if (token.isBlank()) {
+                DebugLog.w(TAG) { "No Mapbox token — set MAPBOX_ACCESS_TOKEN in local.properties" }
+                return@withContext emptyList()
+            }
+            val url = "$BASE/driving/${from.lng},${from.lat};${to.lng},${to.lat}" +
+                "?alternatives=$alternatives&overview=full&geometries=polyline&steps=true" +
+                (mode.exclude?.let { "&exclude=$it" } ?: "") +
+                "&access_token=${URLEncoder.encode(token, "UTF-8")}"
+            try {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    setRequestProperty("User-Agent", UA)
+                    connectTimeout = 10_000
+                    readTimeout = 10_000
+                }
+                val body = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+                conn.disconnect()
+                parseRoutes(body)
+            } catch (e: Exception) {
+                DebugLog.w(TAG) { "routes() failed: ${e.message}" }
+                emptyList()
+            }
+        }
+
+    private fun parseRoutes(json: String): List<Route> {
         val root = JSONObject(json)
         if (root.optString("code") != "Ok") {
-            DebugLog.w(TAG) { "OSRM code=${root.optString("code")}" }
-            return null
+            DebugLog.w(TAG) { "Mapbox code=${root.optString("code")}" }
+            return emptyList()
         }
-        val routes = root.optJSONArray("routes") ?: return null
-        if (routes.length() == 0) return null
-        val r0 = routes.getJSONObject(0)
+        val routes = root.optJSONArray("routes") ?: return emptyList()
+        return (0 until routes.length()).mapNotNull { i -> parseRoute(routes.getJSONObject(i)) }
+    }
 
+    private fun parseRoute(r0: JSONObject): Route? {
         val geometry = PolylineCodec.decode(r0.getString("geometry"))
         if (geometry.size < 2) return null
 

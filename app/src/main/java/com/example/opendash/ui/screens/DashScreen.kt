@@ -99,15 +99,17 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
     val streaming = ui.stage == ConnStage.STREAMING
 
     // Auto-connect on opening the Dash screen, so the rider doesn't tap "Connect" every
-    // ride — just open the app. Fires once; if the dash is off it errors out quietly and
-    // the rider can retry. (Needs permissions already granted from a prior run.)
+    // ride — just open the app (or tap Navigate on a route, which lands here). Fires once;
+    // if the dash is off it errors out quietly and the rider can retry. On first run the
+    // permissions aren't granted yet — request them, and the launcher callback connects.
     // rememberSaveable so a config change (rotation/theme) doesn't reset this and silently
     // reconnect after the rider deliberately disconnected.
     var autoConnectTried by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        if (!autoConnectTried && ui.stage == ConnStage.OFFLINE && hasEssentialPermissions()) {
+        if (!autoConnectTried && (ui.stage == ConnStage.OFFLINE || ui.stage == ConnStage.ERROR)) {
             autoConnectTried = true
-            vm.connect()
+            if (hasEssentialPermissions()) vm.connect()
+            else permissionLauncher.launch(requestedPermissions)
         }
     }
 
@@ -119,7 +121,6 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
             .padding(bottom = 24.dp),
     ) {
         ScreenHeader(
-            eyebrow = "What the rider sees",
             title = "Dash view",
             trailing = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -297,8 +298,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(13.dp))
                     .background(if (ui.offRoute) Color(0x33D8853E) else GoldTint)
-                    .border(1.dp, if (ui.offRoute) Warn else GoldTint2, RoundedCornerShape(13.dp))
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
             ) {
                 Icon(OpenDashIcons.Navi, null, tint = if (ui.offRoute) Warn else Gold, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(11.dp))
@@ -324,10 +324,9 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(13.dp))
+                        .clip(RoundedCornerShape(16.dp))
                         .background(Surf1)
-                        .border(1.dp, Line, RoundedCornerShape(13.dp))
-                        .padding(11.dp),
+                        .padding(12.dp),
                 ) {
                     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.Center) {
                         Text(v, color = TextHi, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
@@ -336,7 +335,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                             Text(u, color = TextLo, fontSize = 10.5.sp, fontFamily = GeistMonoFamily, modifier = Modifier.padding(bottom = 2.dp))
                         }
                     }
-                    Eyebrow(k, Modifier.padding(top = 3.dp))
+                    Text(k, color = TextLo, fontSize = 11.5.sp, fontFamily = GeistFamily, modifier = Modifier.padding(top = 3.dp))
                 }
             }
         }
@@ -351,8 +350,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(20.dp))
                 .background(if (adjustMode) GoldTint else Surf1)
-                .border(1.dp, if (adjustMode) GoldTint2 else Line, RoundedCornerShape(20.dp))
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 13.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(OpenDashIcons.Cross, null, tint = if (adjustMode) Gold else TextMid, modifier = Modifier.size(20.dp))
@@ -375,8 +373,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(20.dp))
                 .background(Surf1)
-                .border(1.dp, Line, RoundedCornerShape(20.dp))
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 13.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(OpenDashIcons.Navi, null, tint = if (ui.headingUp) Gold else TextMid, modifier = Modifier.size(20.dp))
@@ -403,7 +400,6 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                     .weight(1f)
                     .clip(RoundedCornerShape(18.dp))
                     .background(Surf1)
-                    .border(1.dp, Line, RoundedCornerShape(18.dp))
                     .padding(vertical = 16.dp, horizontal = 12.dp),
             ) {
                 Joystick(
@@ -411,7 +407,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                     onMove = { v -> joystickVelocity = if (adjustMode) v else Offset.Zero },
                 )
                 Spacer(Modifier.height(9.dp))
-                Eyebrow("Pan")
+                Text("Pan", color = TextLo, fontSize = 11.5.sp, fontFamily = GeistFamily)
             }
 
             Column(

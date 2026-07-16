@@ -47,34 +47,32 @@ import com.example.opendash.data.VehicleStore
 import com.example.opendash.ui.theme.Alert
 import com.example.opendash.ui.theme.GeistFamily
 
+/**
+ * Vehicle info + management, embedded as a section of the Garage screen (the active
+ * vehicle leads; others follow with "Set current"). Formerly its own bottom tab.
+ */
 @Composable
-fun VehiclesScreen() {
+fun VehiclesSection() {
     val context = LocalContext.current
     val vehicles by VehicleStore.vehicles.collectAsState()
     val activeVehicleId by VehicleStore.activeVehicleId.collectAsState()
     var editingVehicleId by remember { mutableStateOf<String?>(null) }
     var addingVehicle by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(18.dp)
-            .padding(bottom = 24.dp),
-    ) {
-        ScreenHeader(title = "Vehicles")
+    // Active vehicle first — its info is what Garage is about.
+    val ordered = remember(vehicles, activeVehicleId) {
+        vehicles.sortedByDescending { it.id == activeVehicleId }
+    }
 
-        SectionTitle("My Vehicles")
-        OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 16.dp) {
-            vehicles.forEachIndexed { index, vehicle ->
-                if (index > 0) OpenDashDivider(Modifier.padding(vertical = 14.dp))
-                VehicleBlock(
-                    vehicle = vehicle,
-                    active = vehicle.id == activeVehicleId,
-                    onSelect = { VehicleStore.select(context, vehicle.id) },
-                    onEdit = { editingVehicleId = vehicle.id },
-                )
-            }
+    OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 16.dp) {
+        ordered.forEachIndexed { index, vehicle ->
+            if (index > 0) OpenDashDivider(Modifier.padding(vertical = 14.dp))
+            VehicleBlock(
+                vehicle = vehicle,
+                active = vehicle.id == activeVehicleId,
+                onSelect = { VehicleStore.select(context, vehicle.id) },
+                onEdit = { editingVehicleId = vehicle.id },
+            )
         }
 
         Spacer(Modifier.height(14.dp))
@@ -82,8 +80,8 @@ fun VehiclesScreen() {
             "Add vehicle",
             onClick = { addingVehicle = true },
             icon = OpenDashIcons.Plus,
-            variant = BtnVariant.Primary,
-            size = BtnSize.Md,
+            variant = BtnVariant.Secondary,
+            size = BtnSize.Sm,
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -119,18 +117,6 @@ fun VehiclesScreen() {
             },
         )
     }
-}
-
-@Composable
-private fun SectionTitle(label: String) {
-    Text(
-        label,
-        color = MaterialTheme.colorScheme.onBackground,
-        fontSize = 18.sp,
-        fontWeight = FontWeight.Medium,
-        fontFamily = GeistFamily,
-        modifier = Modifier.padding(top = 22.dp, bottom = 10.dp, start = 2.dp),
-    )
 }
 
 @Composable

@@ -7,12 +7,14 @@ import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.CalendarToday
+import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Directions
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -20,6 +22,7 @@ import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.GpsFixed
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.LocalGasStation
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Mic
@@ -38,6 +41,7 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Straighten
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material.icons.outlined.Thermostat
 import androidx.compose.material.icons.outlined.TrendingUp
 import androidx.compose.material.icons.outlined.TwoWheeler
@@ -93,6 +97,8 @@ object OpenDashIcons {
     val Moon          = Icons.Outlined.DarkMode
     val Sync          = Icons.Outlined.Sync
     val Motor         = Icons.Outlined.TwoWheeler
+    val Car           = Icons.Outlined.DirectionsCar
+    val Swap          = Icons.Outlined.SwapVert
     val Flag          = Icons.Outlined.Flag
     val Clock         = Icons.Outlined.Schedule
     val Road          = Icons.Outlined.Straighten
@@ -101,6 +107,8 @@ object OpenDashIcons {
     val Edit          = Icons.Outlined.Edit
     val Zap           = Icons.Outlined.Bolt
     val Units         = Icons.Outlined.Straighten
+    val Layers        = Icons.Outlined.Layers
+    val Directions    = Icons.Outlined.Directions
 
     // ---- Custom icons (SVG path → ImageVector) ----
     val Dash: ImageVector = pathVec(

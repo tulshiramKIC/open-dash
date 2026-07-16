@@ -109,6 +109,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var destLat: Double? = null
     @Volatile private var destLng: Double? = null
     @Volatile private var route: Route? = null
+    // Alternative route geometries drawn faded under the active route on the dash frame.
+    @Volatile private var alternateRoutes: List<List<GeoPoint>> = emptyList()
     @Volatile private var panX = 0f
     @Volatile private var panY = 0f
     @Volatile private var zoom = 19          // nav-level zoom on the dash (street-level default)
@@ -568,6 +570,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         destLat = lat
         destLng = lng
         route = null
+        alternateRoutes = emptyList()
         progressM = 0.0
         smoothEtaSec = 0.0; etaArrivalMs = 0L   // fresh ETA for the new route
         voice.resetTrip()   // fresh announcements for the new route
@@ -584,6 +587,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         destLat = null
         destLng = null
         route = null
+        alternateRoutes = emptyList()
         progressM = 0.0
         offRouteSince = 0L
         panX = 0f; panY = 0f; followMode = true
@@ -612,14 +616,16 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch {
-            val r = Router.route(GeoPoint(loc.latitude, loc.longitude), GeoPoint(destLatV, destLngV))
+            val list = Router.routes(GeoPoint(loc.latitude, loc.longitude), GeoPoint(destLatV, destLngV), alternatives = true)
+            val r = list.firstOrNull()
             if (r != null) {
                 route = r
+                alternateRoutes = list.drop(1).map { it.geometry }
                 tiles.prefetchRoute(r.geometry)
                 _ui.value = _ui.value.copy(hasRoute = true, routePoints = r.geometry)
-                DebugLog.i("DashViewModel") { "Route ready: ${r.geometry.size} pts, ${r.totalMeters.toInt()} m" }
+                DebugLog.i("DashViewModel") { "Route ready: ${r.geometry.size} pts, ${r.totalMeters.toInt()} m, ${alternateRoutes.size} alt" }
             } else {
-                DebugLog.w("DashViewModel") { "Router returned null" }
+                DebugLog.w("DashViewModel") { "Router returned no routes" }
             }
         }
     }
@@ -905,14 +911,16 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         rerouting = true
         DebugLog.i("DashViewModel") { "Off-route ${(now - offRouteSince) / 1000}s → rerouting" }
         viewModelScope.launch {
-            val r = Router.route(GeoPoint(loc.latitude, loc.longitude), GeoPoint(dLat, dLng))
+            val list = Router.routes(GeoPoint(loc.latitude, loc.longitude), GeoPoint(dLat, dLng), alternatives = true)
+            val r = list.firstOrNull()
             if (r != null) {
                 route = r
+                alternateRoutes = list.drop(1).map { it.geometry }
                 progressM = 0.0
                 offRouteSince = 0L
                 tiles.prefetchRoute(r.geometry)
                 _ui.value = _ui.value.copy(hasRoute = true, routePoints = r.geometry)
-                DebugLog.i("DashViewModel") { "Reroute ok: ${r.geometry.size} pts, ${r.totalMeters.toInt()} m" }
+                DebugLog.i("DashViewModel") { "Reroute ok: ${r.geometry.size} pts, ${r.totalMeters.toInt()} m, ${alternateRoutes.size} alt" }
             } else {
                 DebugLog.w("DashViewModel") { "Reroute failed (no internet?)" }
             }
@@ -965,6 +973,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             destLng = destLng,
             destName = _ui.value.destinationName,
             route = route?.geometry ?: emptyList(),
+            alternates = alternateRoutes,
             maneuverText = null, // turn-by-turn maneuver banner removed
             remainingText = remainingM?.let { fmtDist(it) },
             // Top-down (heading-up) nav view. The 3D perspective tilt is DISABLED: warping
