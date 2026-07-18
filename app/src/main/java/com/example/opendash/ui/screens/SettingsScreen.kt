@@ -86,7 +86,6 @@ fun SettingsScreen(
 ) {
     val dashUi by dashViewModel.ui.collectAsState()
 
-    var autoConnect by remember { mutableStateOf(true) }
     var slideshowInterval by remember {
         mutableStateOf(dashViewModel.getWallpaperSlideshowInterval())
     }
@@ -205,11 +204,8 @@ fun SettingsScreen(
             }
         }
 
-        SectionLabel("Connection")
-        SettingsGroup(padding = 6.dp) {
-            SettingRow(OpenDashIcons.Sync, "Auto-connect on start", "Link when the bike is near",
-                control = { SettingsToggle(autoConnect) { autoConnect = it } }, last = true)
-        }
+        // No "Connection" section either: auto-connect fires only on the Dash tab, and the
+        // only reason to open that tab is to project — a switch to not-connect serves no one.
 
         // No "During a ride" toggles: screen-off streaming + keep-awake ARE the product
         // (the whole reason OpenDash exists vs the RE app) — always on, not optional.
