@@ -7,6 +7,7 @@ import android.net.Uri
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,6 +55,8 @@ import com.example.opendash.viewmodel.RouteViewModel
 fun RouteScreen(
     onBack: () -> Unit,
     onSentToDash: (String) -> Unit,
+    onNavigateToTrails: () -> Unit = {},
+    onNavigateToDash: () -> Unit = {},
     routeViewModel: RouteViewModel = viewModel(),
 ) {
     val routeState by routeViewModel.state.collectAsState()
@@ -90,6 +93,9 @@ fun RouteScreen(
     val dashUi by dashViewModel.ui.collectAsState()
     val isActiveNavigation = routeState.navigating
 
+    var showStartAlert by remember { mutableStateOf(false) }
+    var showedStartAlert by rememberSaveable { mutableStateOf(false) }
+
     // Live rider position for the "you are here" blue dot (like Google Maps).
     fun locationGranted(): Boolean = listOf(
         android.Manifest.permission.ACCESS_FINE_LOCATION,
@@ -118,6 +124,24 @@ fun RouteScreen(
         onDispose { tracker.stop() }
     }
 
+    LaunchedEffect(isActiveNavigation, riderLoc, routeState.trailStart) {
+        if (!isActiveNavigation) {
+            showedStartAlert = false
+            showStartAlert = false
+            return@LaunchedEffect
+        }
+        val startPt = routeState.trailStart
+        val loc = riderLoc
+        if (startPt != null && loc != null && !showedStartAlert) {
+            val riderGeo = com.example.opendash.dash.nav.GeoPoint(loc.latitude, loc.longitude)
+            val dist = com.example.opendash.dash.nav.GeoPoint.distMeters(riderGeo, startPt)
+            if (dist <= 10.0) {
+                showStartAlert = true
+                showedStartAlert = true
+            }
+        }
+    }
+
     // Keep search proximity-biased to where the rider actually is right now.
     LaunchedEffect(riderLoc) {
         riderLoc?.let { loc ->
@@ -141,6 +165,15 @@ fun RouteScreen(
         sent = false
     }
 
+    val onBackAction = {
+        if (routeState.isCustomTrail) {
+            exitPreview()
+            onNavigateToTrails()
+        } else {
+            exitPreview()
+        }
+    }
+
     // In-screen back: route preview → explore.
     // When active navigation is running, back does NOT clear it — only the X button does.
     BackHandler(enabled = !isActiveNavigation && (inRoutePreview || searchingForStopIndex >= 0 || isSearchingDestination)) {
@@ -152,6 +185,9 @@ fun RouteScreen(
                 routeViewModel.removeStop(searchingForStopIndex)
             }
             searchingForStopIndex = -1
+        } else if (routeState.isCustomTrail) {
+            exitPreview()
+            onNavigateToTrails()
         } else {
             exitPreview()
         }
@@ -191,7 +227,9 @@ fun RouteScreen(
                 markerBearing = dotBearing,
                 modifier = Modifier.fillMaxSize(),
                 recordedPoints = routeState.recordedPoints,
-                stops = routeState.stops.mapNotNull { if (it.lat != null && it.lng != null) com.example.opendash.dash.nav.GeoPoint(it.lat, it.lng) else null }
+                stops = routeState.stops.mapNotNull { if (it.lat != null && it.lng != null) com.example.opendash.dash.nav.GeoPoint(it.lat, it.lng) else null },
+                isCustomTrail = routeState.isCustomTrail,
+                trailStart = routeState.trailStart?.let { it.lat to it.lng }
             )
 
             if (isActiveNavigation) {
@@ -263,6 +301,13 @@ fun RouteScreen(
                         }
                     }
                 } else {
+                    val infiniteTransition = rememberInfiniteTransition(label = "route-pulse")
+                    val pulseAlpha by infiniteTransition.animateFloat(
+                        1f, 0.4f,
+                        animationSpec = infiniteRepeatable(tween(1000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                        label = "pulse",
+                    )
+
                     // Floating Active Navigation Card
                     OpenDashCard(
                         glow = true,
@@ -272,25 +317,25 @@ fun RouteScreen(
                             .statusBarsPadding()
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                             .fillMaxWidth()
+                            .clickable { onNavigateToDash() }
                     ) {
-                        // Not clickable: while navigation is active the card is status-only.
-                        // Ending the trip (the X) is the only way back to route planning.
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            // Header row: icon + title + close btn
+                            // Header row: pulsing dot + title + close btn
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    OpenDashIcons.Navi,
-                                    contentDescription = null,
-                                    tint = Gold,
-                                    modifier = Modifier.size(20.dp)
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Ok.copy(alpha = pulseAlpha))
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 Text(
-                                    "Active Navigation",
+                                    "ACTIVE NAVIGATION",
                                     color = MaterialTheme.colorScheme.primary,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     fontFamily = GeistFamily,
+                                    letterSpacing = 1.sp,
                                     modifier = Modifier.weight(1f)
                                 )
                                 OpenDashIconBtn(
@@ -306,20 +351,19 @@ fun RouteScreen(
                                     )
                                 )
                             }
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(8.dp))
                             // Destination name
                             Text(
                                 dashUi.destinationName.orEmpty().ifBlank { routeState.destination?.name.orEmpty() },
                                 color = TextHi,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
                                 fontFamily = GeistFamily,
                                 maxLines = 1,
                                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
-                            Spacer(Modifier.height(8.dp))
-                            // Stats row — prefer live dashUi values (updates every tick when streaming)
-                            // Falls back to the static route totals when not connected to dash.
+                            Spacer(Modifier.height(12.dp))
+                            // Stats row
                             val liveDistText = dashUi.remainingKm?.let {
                                 if (it >= 10) "%.0f km".format(it) else "%.1f km".format(it)
                             } ?: routeState.distanceText
@@ -331,30 +375,57 @@ fun RouteScreen(
                                 cal.add(java.util.Calendar.MINUTE, it)
                                 "%02d:%02d".format(cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE))
                             } ?: routeState.etaText
-                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
                                 liveDistText?.let { dist ->
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(OpenDashIcons.Road, null, tint = TextMid, modifier = Modifier.size(13.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(dist, color = TextHi, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0x1A8F7C2E))
+                                            .border(1.dp, Color(0x338F7C2E), RoundedCornerShape(8.dp))
+                                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(OpenDashIcons.Road, null, tint = Gold, modifier = Modifier.size(12.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(dist, color = TextHi, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                                        }
                                     }
                                 }
                                 liveDurText?.let { dur ->
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(OpenDashIcons.Clock, null, tint = TextMid, modifier = Modifier.size(13.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(dur, color = Ok, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0x1A10B981))
+                                            .border(1.dp, Color(0x3310B981), RoundedCornerShape(8.dp))
+                                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(OpenDashIcons.Clock, null, tint = Ok, modifier = Modifier.size(12.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(dur, color = Ok, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                                        }
                                     }
                                 }
                                 liveEtaText?.let { eta ->
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(OpenDashIcons.Flag, null, tint = TextMid, modifier = Modifier.size(13.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text("arrive $eta", color = TextMid, fontSize = 12.sp, fontFamily = GeistMonoFamily)
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0x1A94A3B8))
+                                            .border(1.dp, Color(0x3394A3B8), RoundedCornerShape(8.dp))
+                                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(OpenDashIcons.Flag, null, tint = TextMid, modifier = Modifier.size(12.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(eta, color = TextHi, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                                        }
                                     }
                                 }
                             }
-
                         }
                     }
                 }
@@ -432,6 +503,9 @@ fun RouteScreen(
                                         routeViewModel.removeStop(searchingForStopIndex)
                                     }
                                     searchingForStopIndex = -1
+                                } else if (routeState.isCustomTrail) {
+                                    exitPreview()
+                                    onNavigateToTrails()
                                 } else if (!isActiveNavigation) {
                                     onBack()
                                 }
@@ -547,7 +621,7 @@ fun RouteScreen(
                     ) {
                         OpenDashIconBtn(
                             OpenDashIcons.ChevronLeft,
-                            onClick = { exitPreview() },
+                            onClick = onBackAction,
                             size = 46.dp,
                             modifier = Modifier
                                 .padding(top = 2.dp)
@@ -563,7 +637,7 @@ fun RouteScreen(
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth().clickable { exitPreview() }
+                                modifier = Modifier.fillMaxWidth().clickable { onBackAction() }
                             ) {
                                 Icon(OpenDashIcons.Cross, contentDescription = null, tint = Color(0xFF4285F4), modifier = Modifier.size(17.dp))
                                 Spacer(Modifier.width(10.dp))
@@ -695,18 +769,20 @@ fun RouteScreen(
                             fontFamily = GeistFamily, letterSpacing = (-0.36).sp, maxLines = 1,
                             modifier = Modifier.weight(1f),
                         )
-                        TravelModeIcon(
-                            OpenDashIcons.Car,
-                            selected = routeState.travelMode == Router.TravelMode.CAR,
-                            onClick = { routeViewModel.selectTravelMode(Router.TravelMode.CAR) },
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        TravelModeIcon(
-                            OpenDashIcons.Motor,
-                            selected = routeState.travelMode == Router.TravelMode.BIKE,
-                            onClick = { routeViewModel.selectTravelMode(Router.TravelMode.BIKE) },
-                        )
-                        if (canStart) {
+                        if (!routeState.isCustomTrail) {
+                            TravelModeIcon(
+                                OpenDashIcons.Car,
+                                selected = routeState.travelMode == Router.TravelMode.CAR,
+                                onClick = { routeViewModel.selectTravelMode(Router.TravelMode.CAR) },
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            TravelModeIcon(
+                                OpenDashIcons.Motor,
+                                selected = routeState.travelMode == Router.TravelMode.BIKE,
+                                onClick = { routeViewModel.selectTravelMode(Router.TravelMode.BIKE) },
+                            )
+                        }
+                        if (canStart && !routeState.isCustomTrail) {
                             Spacer(Modifier.width(6.dp))
                             OpenDashIconBtn(
                                 OpenDashIcons.Save,
@@ -751,12 +827,20 @@ fun RouteScreen(
                     Spacer(Modifier.height(16.dp))
 
                     // Start (fills width) + compact Voice icon.
+                    val isAwayFromTrailStart = remember(routeState.isCustomTrail, routeState.trailStart, riderLoc) {
+                        if (routeState.isCustomTrail && routeState.trailStart != null && riderLoc != null) {
+                            val riderGeo = com.example.opendash.dash.nav.GeoPoint(riderLoc!!.latitude, riderLoc!!.longitude)
+                            com.example.opendash.dash.nav.GeoPoint.distMeters(riderGeo, routeState.trailStart!!) > 100.0
+                        } else false
+                    }
+
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OpenDashBtn(
                             label = when {
                                 sent                   -> "Starting…"
                                 routeState.isResolving -> "Resolving…"
                                 routeState.routing     -> "Finding route…"
+                                isAwayFromTrailStart   -> "Head to trail starting point"
                                 else                   -> "Start"
                             },
                             onClick = { routeViewModel.startNavigation(); sent = true },
@@ -766,7 +850,7 @@ fun RouteScreen(
                             enabled = !sent && canStart,
                             modifier = Modifier.weight(1f),
                         )
-                        if (canStart) {
+                        if (canStart && !routeState.isCustomTrail) {
                             Spacer(Modifier.width(8.dp))
                             OpenDashBtn(
                                 label = "Add stops",
@@ -872,6 +956,7 @@ fun RouteScreen(
                         } else {
                             routeViewModel.clear()
                         }
+                        onNavigateToTrails()
                     },
                     icon = OpenDashIcons.X,
                     variant = BtnVariant.Primary,
@@ -959,6 +1044,34 @@ fun RouteScreen(
                 }
             }
         }
+    }
+
+    if (showStartAlert) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showStartAlert = false },
+            containerColor = Bg1,
+            title = {
+                Text(
+                    "Trail Start Reached",
+                    color = TextHi,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = GeistFamily
+                )
+            },
+            text = {
+                Text(
+                    "You have reached the starting point of your custom trail. Have a safe ride!",
+                    color = TextLo,
+                    fontFamily = GeistFamily,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { showStartAlert = false }) {
+                    Text("OK", color = Gold, fontFamily = GeistFamily, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
     }
 
     if (showSave) SaveLocationDialog(
@@ -1115,18 +1228,26 @@ private fun SaveLocationDialog(defaultName: String, onSave: (String, String) -> 
 }
 
 @Composable
-internal fun EditLocationDialog(loc: com.example.opendash.data.SavedLocation, onSave: (String, String) -> Unit, onDelete: () -> Unit, onDismiss: () -> Unit) {
+internal fun EditLocationDialog(
+    loc: com.example.opendash.data.SavedLocation,
+    onSave: (String, String) -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit,
+    showNote: Boolean = true
+) {
     var name by remember { mutableStateOf(loc.name) }
     var note by remember { mutableStateOf(loc.note) }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { androidx.compose.material3.TextButton(enabled = name.isNotBlank(), onClick = { onSave(name.trim(), note.trim()) }) { Text("Save", color = if (name.isNotBlank()) Gold else TextLo) } },
         dismissButton = { androidx.compose.material3.TextButton(onClick = onDelete) { Text("Delete", color = Alert) } },
-        title = { Text("Edit destination", color = TextHi) },
+        title = { Text(if (showNote) "Edit destination" else "Edit trail name", color = TextHi) },
         text = {
             Column {
                 androidx.compose.material3.OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                androidx.compose.material3.OutlinedTextField(note, { note = it }, label = { Text("Note") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                if (showNote) {
+                    androidx.compose.material3.OutlinedTextField(note, { note = it }, label = { Text("Note") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                }
             }
         },
         containerColor = Surf1,

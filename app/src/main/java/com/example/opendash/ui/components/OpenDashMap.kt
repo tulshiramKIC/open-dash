@@ -94,6 +94,7 @@ private const val DOT_ICON = "rider-dot"
 private const val DOT_BEAM_ICON = "rider-dot-beam"
 private const val DEST_ICON = "dest-pin"
 private const val STOP_ICON = "stop-pin"
+private const val TRAIL_START_ICON = "trail-start-pin"
 
 /**
  * In-app phone map (MapLibre + OpenFreeMap). Keyless and redistributable — no Google
@@ -145,6 +146,9 @@ fun OpenDashMap(
     bikeMarker: Boolean = true,
     recordedPoints: List<GeoPoint> = emptyList(),
     stops: List<GeoPoint> = emptyList(),
+    isCustomTrail: Boolean = false,
+    trailStart: Pair<Double, Double>? = null,
+    showTravelledGrey: Boolean = false,
 ) {
     val context = LocalContext.current
     remember { MapLibre.getInstance(context) }
@@ -259,6 +263,7 @@ fun OpenDashMap(
             style.addImage(DOT_BEAM_ICON, riderDotBeamBitmap())
             style.addImage(DEST_ICON, destPinBitmap())
             style.addImage(STOP_ICON, stopPinBitmap())
+            style.addImage(TRAIL_START_ICON, trailStartPinBitmap())
             lineMgr = LineManager(mapView, m, style)
             symbolMgr = SymbolManager(mapView, m, style).apply {
                 iconAllowOverlap = true; iconIgnorePlacement = true
@@ -271,14 +276,73 @@ fun OpenDashMap(
     }
 
     // Redraw route + markers whenever the data or mode changes.
-    LaunchedEffect(styleReady, routePoints, routeCongestion, alternateRoutes, allRoutes, routeDurations, selectedRouteIndex, dest, stops, riderLat, riderLng, riderBearing, markerBearing, bikeMarker, navMode, recordedPoints) {
+    LaunchedEffect(styleReady, routePoints, routeCongestion, alternateRoutes, allRoutes, routeDurations, selectedRouteIndex, dest, stops, riderLat, riderLng, riderBearing, markerBearing, bikeMarker, navMode, recordedPoints, isCustomTrail, trailStart, showTravelledGrey) {
         if (destroyed) return@LaunchedEffect
         val style = map?.style ?: return@LaunchedEffect
         val lm = lineMgr ?: return@LaunchedEffect
         val sm = symbolMgr ?: return@LaunchedEffect
         lm.deleteAll(); sm.deleteAll()
 
-        if (allRoutes.isNotEmpty()) {
+        if (isCustomTrail && trailStart != null) {
+            if (routePoints.size >= 2) {
+                val startGeo = GeoPoint(trailStart.first, trailStart.second)
+                val trailStartIdx = closestPointIndex(routePoints, startGeo)
+                val riderIdx = if (showTravelledGrey && riderLat != null && riderLng != null) {
+                    val riderGeo = GeoPoint(riderLat, riderLng)
+                    val idx = closestPointIndex(routePoints, riderGeo)
+                    val dist = GeoPoint.distMeters(riderGeo, routePoints[idx])
+                    if (dist <= 50.0) idx else -1
+                } else -1
+
+                if (riderIdx in routePoints.indices) {
+                    if (riderIdx < trailStartIdx) {
+                        // Travelled standard route: grey
+                        if (riderIdx > 0) {
+                            lm.create(
+                                LineOptions().withLatLngs(routePoints.subList(0, riderIdx + 1).map { LatLng(it.lat, it.lng) })
+                                    .withLineColor("#9AA0A6").withLineWidth(5.5f)
+                            )
+                        }
+                        // Custom trail: red
+                        lm.create(
+                            LineOptions().withLatLngs(routePoints.subList(trailStartIdx, routePoints.size).map { LatLng(it.lat, it.lng) })
+                                .withLineColor("#E5341F").withLineWidth(5.5f)
+                        )
+                        // Remaining standard route: blue
+                        lm.create(
+                            LineOptions().withLatLngs(routePoints.subList(riderIdx, trailStartIdx + 1).map { LatLng(it.lat, it.lng) })
+                                .withLineColor("#4285F4").withLineWidth(5.5f)
+                        )
+                    } else {
+                        // Rider is already on the trail
+                        // Travelled portion (standard route + travelled custom trail): grey
+                        if (riderIdx > 0) {
+                            lm.create(
+                                LineOptions().withLatLngs(routePoints.subList(0, riderIdx + 1).map { LatLng(it.lat, it.lng) })
+                                    .withLineColor("#9AA0A6").withLineWidth(5.5f)
+                            )
+                        }
+                        // Remaining custom trail: red
+                        lm.create(
+                            LineOptions().withLatLngs(routePoints.subList(riderIdx, routePoints.size).map { LatLng(it.lat, it.lng) })
+                                .withLineColor("#E5341F").withLineWidth(5.5f)
+                        )
+                    }
+                } else {
+                    // No rider location yet: draw custom trail in red first, then standard route in blue on top
+                    lm.create(
+                        LineOptions().withLatLngs(routePoints.subList(trailStartIdx, routePoints.size).map { LatLng(it.lat, it.lng) })
+                            .withLineColor("#E5341F").withLineWidth(5.5f)
+                    )
+                    if (trailStartIdx > 0) {
+                        lm.create(
+                            LineOptions().withLatLngs(routePoints.subList(0, trailStartIdx + 1).map { LatLng(it.lat, it.lng) })
+                                .withLineColor("#4285F4").withLineWidth(5.5f)
+                        )
+                    }
+                }
+            }
+        } else if (allRoutes.isNotEmpty()) {
             // Multi-route selection mode: grey alternates, colored selected, duration bubbles.
             allRoutes.forEachIndexed { i, geo ->
                 if (i != selectedRouteIndex && geo.size >= 2) {
@@ -311,7 +375,6 @@ fun OpenDashMap(
                     }
                 }
             }
-
         } else {
             // Single-route mode (dash view): alternates + selected + traffic coloring.
             alternateRoutes.forEach { alt ->
@@ -322,12 +385,42 @@ fun OpenDashMap(
                     )
                 }
             }
-            if (routePoints.size >= 2) drawColoredRoute(lm, routePoints, routeCongestion)
+            if (routePoints.size >= 2) {
+                // Only split grey if showTravelledGrey is true
+                if (showTravelledGrey && riderLat != null && riderLng != null) {
+                    val riderGeo = GeoPoint(riderLat, riderLng)
+                    val splitIdx = closestPointIndex(routePoints, riderGeo)
+                    val dist = GeoPoint.distMeters(riderGeo, routePoints[splitIdx])
+                    if (splitIdx > 0 && dist <= 50.0) {
+                        val travelled = routePoints.subList(0, splitIdx + 1)
+                        lm.create(LineOptions().withLatLngs(travelled.map { LatLng(it.lat, it.lng) }).withLineColor("#9AA0A6").withLineWidth(5.5f))
+                        val remaining = routePoints.subList(splitIdx, routePoints.size)
+                        drawColoredRoute(lm, remaining, congestion = emptyList())
+                    } else {
+                        drawColoredRoute(lm, routePoints, routeCongestion)
+                    }
+                } else {
+                    drawColoredRoute(lm, routePoints, routeCongestion)
+                }
+            }
         }
         if (recordedPoints.size >= 2) {
             lm.create(
                 LineOptions().withLatLngs(recordedPoints.map { LatLng(it.lat, it.lng) })
                     .withLineColor("#E5341F").withLineWidth(5.5f)
+            )
+            // Draw a dedicated start pin at the trail origin so the rider dot
+            // icon doesn't appear "stuck" at the starting location.
+            val startPt = recordedPoints.first()
+            sm.create(
+                SymbolOptions().withLatLng(LatLng(startPt.lat, startPt.lng))
+                    .withIconImage(TRAIL_START_ICON).withIconSize(1.1f)
+            )
+        }
+        if (isCustomTrail && trailStart != null) {
+            sm.create(
+                SymbolOptions().withLatLng(LatLng(trailStart.first, trailStart.second))
+                    .withIconImage(TRAIL_START_ICON).withIconSize(1.1f)
             )
         }
         dest?.let { sm.create(SymbolOptions().withLatLng(LatLng(it.first, it.second)).withIconImage(DEST_ICON).withIconSize(1.1f)) }
@@ -747,3 +840,30 @@ private fun stopPinBitmap(): Bitmap {
     p.color = android.graphics.Color.WHITE; c.drawCircle(s / 2f, s / 2f, s * 0.09f, p)
     return bmp
 }
+
+/** Green pin for the trail recording start point. White ring + green fill + white dot. */
+private fun trailStartPinBitmap(): Bitmap {
+    val s = 72
+    val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    p.color = android.graphics.Color.WHITE; c.drawCircle(s / 2f, s / 2f, s * 0.30f, p)
+    p.color = android.graphics.Color.rgb(52, 168, 83); c.drawCircle(s / 2f, s / 2f, s * 0.24f, p)
+    p.color = android.graphics.Color.WHITE; c.drawCircle(s / 2f, s / 2f, s * 0.09f, p)
+    return bmp
+}
+
+/**
+ * Returns the index in [points] of the point closest to [rider].
+ * Used to split the route into a grey "already travelled" prefix and a blue remaining suffix.
+ */
+private fun closestPointIndex(points: List<GeoPoint>, rider: GeoPoint): Int {
+    var bestIdx = 0
+    var bestDist = Double.MAX_VALUE
+    points.forEachIndexed { i, pt ->
+        val d = GeoPoint.distMeters(rider, pt)
+        if (d < bestDist) { bestDist = d; bestIdx = i }
+    }
+    return bestIdx
+}
+

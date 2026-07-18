@@ -1,6 +1,7 @@
 package com.example.opendash
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -54,7 +55,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        when (intent?.action) {
+        val uri = intent?.data ?: return
+        when (intent.action) {
             Intent.ACTION_SEND -> {
                 if (intent.type == "text/plain") {
                     val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
@@ -62,8 +64,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
             Intent.ACTION_VIEW -> {
-                val uri = intent.data?.toString() ?: return
-                routeViewModel.handleSharedText(uri)
+                val scheme = uri.scheme
+                if (scheme == "http" || scheme == "https" || scheme == "geo") {
+                    routeViewModel.handleSharedText(uri.toString())
+                } else {
+                    routeViewModel.importGpxFile(this, uri)
+                }
             }
         }
     }

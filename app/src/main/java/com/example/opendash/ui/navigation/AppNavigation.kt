@@ -203,14 +203,68 @@ fun AppNavigation(
                 }
 
                 composable(Screen.Trails.route) {
+                    var showRecordingConflictDialog by remember { mutableStateOf(false) }
+
+                    if (showRecordingConflictDialog) {
+                        androidx.compose.material3.AlertDialog(
+                            onDismissRequest = { showRecordingConflictDialog = false },
+                            containerColor = com.example.opendash.ui.theme.Bg1,
+                            icon = {
+                                androidx.compose.material3.Icon(
+                                    com.example.opendash.ui.OpenDashIcons.Target,
+                                    null,
+                                    tint = com.example.opendash.ui.theme.Warn,
+                                    modifier = androidx.compose.ui.Modifier.size(28.dp)
+                                )
+                            },
+                            title = {
+                                androidx.compose.material3.Text(
+                                    "Navigation active",
+                                    color = com.example.opendash.ui.theme.TextHi,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = com.example.opendash.ui.theme.GeistFamily
+                                )
+                            },
+                            text = {
+                                androidx.compose.material3.Text(
+                                    "Recording a trail will end your active navigation. Do you want to continue?",
+                                    color = com.example.opendash.ui.theme.TextLo,
+                                    fontFamily = com.example.opendash.ui.theme.GeistFamily,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            confirmButton = {
+                                androidx.compose.material3.TextButton(onClick = {
+                                    showRecordingConflictDialog = false
+                                    routeViewModel.clear()
+                                    dashViewModel.exitNavigation()
+                                    routeViewModel.prepareRecordingRoute()
+                                    navController.navigate(Screen.Route.route) { launchSingleTop = true }
+                                }) {
+                                    androidx.compose.material3.Text("End & Record", color = com.example.opendash.ui.theme.Warn, fontFamily = com.example.opendash.ui.theme.GeistFamily, fontWeight = FontWeight.Bold)
+                                }
+                            },
+                            dismissButton = {
+                                androidx.compose.material3.TextButton(onClick = { showRecordingConflictDialog = false }) {
+                                    androidx.compose.material3.Text("Cancel", color = com.example.opendash.ui.theme.TextLo, fontFamily = com.example.opendash.ui.theme.GeistFamily)
+                                }
+                            }
+                        )
+                    }
+
+
                     TrailsScreen(
                         routeViewModel = routeViewModel,
                         onNavigateToRoute = {
                             navController.navigate(Screen.Route.route) { launchSingleTop = true }
                         },
                         onStartRecording = {
-                            routeViewModel.prepareRecordingRoute()
-                            navController.navigate(Screen.Route.route) { launchSingleTop = true }
+                            if (routeState.navigating) {
+                                showRecordingConflictDialog = true
+                            } else {
+                                routeViewModel.prepareRecordingRoute()
+                                navController.navigate(Screen.Route.route) { launchSingleTop = true }
+                            }
                         },
                         isActiveNavigation = routeState.navigating,
                         onExitNavigation = {
@@ -224,6 +278,12 @@ fun AppNavigation(
                     RouteScreen(
                         routeViewModel = routeViewModel,
                         onBack = { navigateHome() },
+                        onNavigateToTrails = {
+                            navController.navigate(Screen.Trails.route) {
+                                launchSingleTop = true
+                                popUpTo(Screen.Home.route) { saveState = true }
+                            }
+                        },
                         onSentToDash = { destName ->
                             dashViewModel.setDestination(
                                 name = destName,
@@ -231,6 +291,8 @@ fun AppNavigation(
                                 lng  = routeState.destination?.lng,
                                 initialRoute = routeState.route,
                                 initialAlternates = routeState.routes,
+                                isCustomTrail = routeState.isCustomTrail,
+                                trailStart = routeState.trailStart?.let { it.lat to it.lng }
                             )
                             // Start navigation: open the dash view. DashScreen owns the
                             // connect — it requests the runtime permissions first (starting
@@ -240,6 +302,11 @@ fun AppNavigation(
                                 popUpTo(Screen.Home.route)
                             }
                         },
+                        onNavigateToDash = {
+                            navController.navigate(Screen.Dash.route) {
+                                popUpTo(Screen.Home.route)
+                            }
+                        }
                     )
                 }
 

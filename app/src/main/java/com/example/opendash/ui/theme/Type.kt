@@ -22,6 +22,10 @@ val GeistFamily = FontFamily(
     Font(googleFont = GoogleFont("Geist"), fontProvider = provider, weight = FontWeight.Bold),
 )
 
+val FunkyFamily = FontFamily(
+    androidx.compose.ui.text.font.Font(R.font.funky)
+)
+
 val GeistMonoFamily = FontFamily(
     Font(googleFont = GoogleFont("Geist Mono"), fontProvider = provider, weight = FontWeight.Normal),
     Font(googleFont = GoogleFont("Geist Mono"), fontProvider = provider, weight = FontWeight.Medium),

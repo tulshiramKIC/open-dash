@@ -8,6 +8,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -231,42 +233,109 @@ fun HomeScreen(
             OpenDashCard(
                 glow = true,
                 padding = 16.dp,
-                modifier = Modifier.fillMaxWidth().clickable { onNavigate("dash") }
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onNavigate("dash") }
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        OpenDashIcons.Navi,
-                        contentDescription = null,
-                        tint = Gold,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "Active Navigation",
-                            color = MaterialTheme.colorScheme.primary,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = GeistFamily
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(Ok.copy(alpha = pulseAlpha))
                         )
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(Modifier.width(8.dp))
                         Text(
-                            activeDest,
-                            color = TextHi,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
+                            "ACTIVE NAVIGATION",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
                             fontFamily = GeistFamily,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            letterSpacing = 1.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Icon(
+                            OpenDashIcons.ChevronRight,
+                            contentDescription = "Resume navigation",
+                            tint = TextLo,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Icon(
-                        OpenDashIcons.ChevronRight,
-                        contentDescription = "Resume navigation",
-                        tint = TextLo,
-                        modifier = Modifier.size(18.dp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        activeDest,
+                        color = TextHi,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = GeistFamily,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(Modifier.height(12.dp))
+
+                    val liveDistText = dashUi.remainingKm?.let {
+                        if (it >= 10) "%.0f km".format(it) else "%.1f km".format(it)
+                    } ?: routeState.distanceText
+                    val liveDurText = dashUi.etaMinutes?.let {
+                        if (it >= 60) "${it / 60}h ${it % 60}m" else "$it min"
+                    } ?: routeState.durationText
+                    val liveEtaText = dashUi.etaMinutes?.let {
+                        val cal = java.util.Calendar.getInstance()
+                        cal.add(java.util.Calendar.MINUTE, it)
+                        "%02d:%02d".format(cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE))
+                    } ?: routeState.etaText
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        liveDistText?.let { dist ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0x1A8F7C2E))
+                                    .border(1.dp, Color(0x338F7C2E), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(OpenDashIcons.Road, null, tint = Gold, modifier = Modifier.size(12.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(dist, color = TextHi, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                                }
+                            }
+                        }
+                        liveDurText?.let { dur ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0x1A10B981))
+                                    .border(1.dp, Color(0x3310B981), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(OpenDashIcons.Clock, null, tint = Ok, modifier = Modifier.size(12.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(dur, color = Ok, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                                }
+                            }
+                        }
+                        liveEtaText?.let { eta ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0x1A94A3B8))
+                                    .border(1.dp, Color(0x3394A3B8), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(OpenDashIcons.Flag, null, tint = TextMid, modifier = Modifier.size(12.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(eta, color = TextHi, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -82,6 +82,8 @@ data class DashUiState(
     val pendingPairingSsid: String? = null,
     val showMediaOverlay: Boolean = false,
     val musicMode: Boolean = false,   // joystick is in MUSIC control mode (badge shown on dash)
+    val isCustomTrail: Boolean = false,
+    val trailStart: Pair<Double, Double>? = null,
 )
 
 class DashViewModel(app: Application) : AndroidViewModel(app) {
@@ -640,7 +642,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         lat: Double?,
         lng: Double?,
         initialRoute: Route? = null,
-        initialAlternates: List<Route> = emptyList()
+        initialAlternates: List<Route> = emptyList(),
+        isCustomTrail: Boolean = false,
+        trailStart: Pair<Double, Double>? = null,
     ) {
         val alternates = initialAlternates.filter { it != initialRoute }
         // Fresh trip → fresh camera: nav default zoom, auto-zoom active immediately.
@@ -653,6 +657,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             routePoints = initialRoute?.geometry ?: emptyList(),
             routeCongestion = initialRoute?.congestion ?: emptyList(),
             mapZoom = zoom,
+            isCustomTrail = isCustomTrail,
+            trailStart = trailStart,
         )
         destLat = lat
         destLng = lng

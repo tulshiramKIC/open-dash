@@ -28,6 +28,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -332,8 +335,14 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                         markerBearing = if (stationary) deviceAzimuth else null,
                         bikeMarker = bikeMarker,
                         modifier = Modifier.fillMaxSize(),
+                        isCustomTrail = ui.isCustomTrail,
+                        trailStart = ui.trailStart,
+                        showTravelledGrey = true
                     )
+
                 }
+
+
 
                 NativeClusterMock(
                     speedKmh = ui.speedKmh,

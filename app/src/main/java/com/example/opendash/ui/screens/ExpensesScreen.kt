@@ -83,12 +83,10 @@ fun ExpensesScreen(vm: GarageViewModel = viewModel()) {
         true
     }
     val currency by CurrencySettings.currency.collectAsState()
-    val scope = rememberCoroutineScope()
     var selected by remember { mutableStateOf("All Expenses") }
     val periods = remember { expensePeriods() }
     var selectedPeriod by remember { mutableStateOf(periods.first()) }
     var showAdd by remember { mutableStateOf(false) }
-    var showShare by remember { mutableStateOf(false) }
     val categories = listOf("All Expenses", "Fuel", "Repairs", "Accessories", "Riding Gear", "Food", "Stay", "Transport", "Others")
     val periodExpenses = ui.expenses.filter { selectedPeriod.includes(it.dateMs) }
     val shown = if (selected == "All Expenses") periodExpenses else periodExpenses.filter { it.category == selected }
@@ -100,19 +98,12 @@ fun ExpensesScreen(vm: GarageViewModel = viewModel()) {
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(18.dp)
-                .padding(bottom = 96.dp),
+                .padding(bottom = 160.dp),
         ) {
             ScreenHeader(title = "Expenses")
 
             OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 18.dp) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Eyebrow("Total spend", Modifier.weight(1f))
-                    OpenDashIconBtn(
-                        OpenDashIcons.Share,
-                        onClick = { if (shown.isNotEmpty()) showShare = true },
-                        size = 38.dp,
-                    )
-                }
+                Eyebrow("Total spend")
                 Spacer(Modifier.height(4.dp))
                 Text(
                     formatCurrencyAmount(total, currency),
@@ -191,7 +182,8 @@ fun ExpensesScreen(vm: GarageViewModel = viewModel()) {
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(18.dp),
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 92.dp),
         )
     }
 
@@ -200,18 +192,6 @@ fun ExpensesScreen(vm: GarageViewModel = viewModel()) {
         currency = currency,
         onAdd = { category, amount, note, dateMs -> vm.addExpense(category, amount, note, dateMs); showAdd = false },
         onDismiss = { showAdd = false },
-    )
-    if (showShare) ExpenseExportSheet(
-        periodLabel = selectedPeriod.label,
-        onDismiss = { showShare = false },
-        onExcel = {
-            showShare = false
-            scope.launch { shareExpenseFile(ctx, vm.exportExpensesCsv(shown, selectedPeriod.fileLabel, currency), "text/csv") }
-        },
-        onDoc = {
-            showShare = false
-            scope.launch { shareExpenseFile(ctx, vm.exportExpensesDoc(shown, selectedPeriod.label, currency), "application/msword") }
-        },
     )
 }
 
@@ -405,21 +385,6 @@ private fun parseExpenseDateTime(date: String, time: String): Long? =
             ?.time
     }.getOrNull()
 
-@Composable
-private fun ExpenseExportSheet(periodLabel: String, onDismiss: () -> Unit, onExcel: () -> Unit, onDoc: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        title = { Text("Export $periodLabel", color = MaterialTheme.colorScheme.onSurface) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                OpenDashBtn("Excel / CSV", onClick = onExcel, icon = OpenDashIcons.Chart, variant = BtnVariant.Secondary, size = BtnSize.Md, modifier = Modifier.fillMaxWidth())
-                OpenDashBtn("Document", onClick = onDoc, icon = OpenDashIcons.Share, variant = BtnVariant.Secondary, size = BtnSize.Md, modifier = Modifier.fillMaxWidth())
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = MaterialTheme.colorScheme.onSurfaceVariant) } },
-    )
-}
 
 @Composable
 private fun ExpenseField(
@@ -561,14 +526,4 @@ private fun ExpensePeriodSelector(
             }
         }
     }
-}
-
-private fun shareExpenseFile(context: android.content.Context, file: File, mimeType: String) {
-    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = mimeType
-        putExtra(Intent.EXTRA_STREAM, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    context.startActivity(Intent.createChooser(send, "Export expenses"))
 }

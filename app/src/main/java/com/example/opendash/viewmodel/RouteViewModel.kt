@@ -48,12 +48,19 @@ data class RouteState(
     val isPreparingRouteRecording: Boolean = false,
     val recordingTrailName: String = "",
     val navigating: Boolean = false,
+    val isCustomTrail: Boolean = false,
+    val trailStart: GeoPoint? = null,
 )
 
 class RouteViewModel(app: Application) : AndroidViewModel(app) {
     private val TAG = "RouteViewModel"
     private val _state = MutableStateFlow(RouteState())
     val state = _state.asStateFlow()
+
+    /** One-shot message after a GPX export (file path or error). Cleared after reading. */
+    private val _exportMessage = MutableStateFlow<String?>(null)
+    val exportMessage = _exportMessage.asStateFlow()
+    fun clearExportMessage() { _exportMessage.value = null }
 
     private val lm = app.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val repo = com.example.opendash.data.SyncRepository.get(app)
@@ -139,10 +146,15 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
                         route = route,
                         routes = routes,
                         selectedRouteIndex = selectedIdx,
+                        isCustomTrail = true,
+                        trailStart = route.geometry.firstOrNull(),
                         distanceText = fmtKm(route.totalMeters),
                         durationText = fmtDuration(route.totalSeconds),
                         etaText = fmtEta(route.totalSeconds),
                     )
+                    
+                    // Asynchronously calculate a route from current location to the start of the trail
+                    calculateRouteToTrailStart(route)
                     DebugLog.i(TAG) { "Loaded route cache with ${routes.size} routes for ${loc.name}" }
                     return
                 }
@@ -150,7 +162,83 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
                 DebugLog.w(TAG) { "Failed to load route cache: ${e.message}" }
             }
         }
+        _state.value = _state.value.copy(isCustomTrail = false, trailStart = null)
         computeRoute()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun calculateRouteToTrailStart(trailRoute: Route) {
+        val origin = runCatching {
+            lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+        }.getOrNull() ?: return
+
+        val startPt = trailRoute.geometry.firstOrNull() ?: return
+        val originGeo = GeoPoint(origin.latitude, origin.longitude)
+        
+        // If already very close to the start (less than 100 meters), don't calculate route to start
+        if (GeoPoint.distMeters(originGeo, startPt) < 100.0) return
+
+        viewModelScope.launch {
+            try {
+                val toStartRoutes = Router.routes(
+                    originGeo,
+                    startPt,
+                    stops = emptyList(),
+                    alternatives = false
+                )
+                val toStart = toStartRoutes.firstOrNull()
+                if (toStart != null) {
+                    // Combine routes!
+                    val combinedGeom = toStart.geometry.dropLast(1) + trailRoute.geometry
+                    val combinedManeuvers = toStart.maneuvers + listOf(
+                        Maneuver(
+                            type = ManeuverType.DEPART,
+                            instruction = "Entering Custom Trail",
+                            location = startPt,
+                            cumulativeMeters = toStart.totalMeters
+                        )
+                    ) + trailRoute.maneuvers.map {
+                        it.copy(cumulativeMeters = it.cumulativeMeters + toStart.totalMeters)
+                    }
+
+                    val combinedMeters = toStart.totalMeters + trailRoute.totalMeters
+                    val combinedSeconds = toStart.totalSeconds + trailRoute.totalSeconds
+
+                    val cumulative = DoubleArray(combinedGeom.size)
+                    var total = 0.0
+                    cumulative[0] = 0.0
+                    for (i in 1 until combinedGeom.size) {
+                        val p1 = combinedGeom[i - 1]
+                        val p2 = combinedGeom[i]
+                        val res = FloatArray(1)
+                        android.location.Location.distanceBetween(p1.lat, p1.lng, p2.lat, p2.lng, res)
+                        total += res[0]
+                        cumulative[i] = total
+                    }
+
+                    val combinedRoute = Route(
+                        geometry = combinedGeom,
+                        maneuvers = combinedManeuvers,
+                        totalMeters = combinedMeters,
+                        totalSeconds = combinedSeconds,
+                        cumulative = cumulative
+                    )
+
+                    _state.value = _state.value.copy(
+                        route = combinedRoute,
+                        routes = listOf(combinedRoute),
+                        isCustomTrail = true,
+                        trailStart = startPt,
+                        distanceText = fmtKm(combinedRoute.totalMeters),
+                        durationText = fmtDuration(combinedRoute.totalSeconds),
+                        etaText = fmtEta(combinedRoute.totalSeconds),
+                    )
+                }
+            } catch (e: Exception) {
+                DebugLog.w(TAG) { "Failed to calculate route to trail start: ${e.message}" }
+            }
+        }
     }
 
     fun handleSharedText(text: String) {
@@ -532,7 +620,6 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun importGpxFile(context: Context, uri: Uri) {
-        _state.value = RouteState(isResolving = true)
         viewModelScope.launch {
             try {
                 val points = withContext(Dispatchers.IO) {
@@ -562,7 +649,24 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 val routeName = getFileName(context, uri) ?: "Imported GPX"
-                val route = withContext(Dispatchers.IO) {
+                
+                // Duplicate check by name (case-insensitive)
+                val isDuplicate = withContext(Dispatchers.IO) {
+                    val existingLocations = repo.savedLocations()
+                    existingLocations.any { it.name.trim().equals(routeName.trim(), ignoreCase = true) }
+                }
+
+                if (isDuplicate) {
+                    _exportMessage.value = "Trail \"$routeName\" is already imported"
+                    return@launch
+                }
+
+                val lastPt = points.last()
+                val sid = withContext(Dispatchers.IO) {
+                    repo.addSaved(routeName, lastPt.lat, lastPt.lng, "Imported custom trail route")
+                }
+
+                withContext(Dispatchers.IO) {
                     val cumulative = DoubleArray(points.size)
                     var totalMeters = 0.0
                     cumulative[0] = 0.0
@@ -592,28 +696,22 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
                         )
                     )
 
-                    Route(
+                    val route = Route(
                         geometry = points,
                         maneuvers = maneuvers,
                         totalMeters = totalMeters,
                         totalSeconds = totalSeconds,
                         cumulative = cumulative
                     )
+                    
+                    val file = java.io.File(getApplication<Application>().filesDir, "route_${sid}.json")
+                    file.writeText(com.example.opendash.dash.nav.Route.routesToJson(listOf(route), 0))
                 }
 
-                _state.value = RouteState(
-                    destination = SharedLocation(name = routeName, lat = points.last().lat, lng = points.last().lng),
-                    route = route,
-                    routes = listOf(route),
-                    selectedRouteIndex = 0,
-                    isResolving = false,
-                    distanceText = fmtKm(route.totalMeters),
-                    durationText = fmtDuration(route.totalSeconds),
-                    etaText = fmtEta(route.totalSeconds),
-                )
+                _exportMessage.value = "Imported \"$routeName\" successfully"
             } catch (e: Exception) {
                 DebugLog.e(TAG, { "GPX import failed" }, e)
-                _state.value = RouteState()
+                _exportMessage.value = "Import failed: ${e.message}"
             }
         }
     }
@@ -641,38 +739,52 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
 
     fun exportGpx(context: Context, route: Route, name: String) {
         viewModelScope.launch {
-            val file = withContext(Dispatchers.IO) {
-                val cleanName = name.replace(Regex("[^a-zA-Z0-9]"), "_")
-                val f = java.io.File(context.cacheDir, "${cleanName}.gpx")
-                val sb = StringBuilder()
-                sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-                sb.append("<gpx version=\"1.1\" creator=\"OpenDash\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
-                sb.append("  <trk>\n")
-                sb.append("    <name>").append(name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")).append("</name>\n")
-                sb.append("    <trkseg>\n")
-                route.geometry.forEach { gp ->
-                    sb.append("      <trkpt lat=\"").append(gp.lat).append("\" lon=\"").append(gp.lng).append("\" />\n")
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val cleanName = name.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+                    val fileName = "${cleanName}.gpx"
+                    val gpxContent = buildString {
+                        append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                        append("<gpx version=\"1.1\" creator=\"OpenDash\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
+                        append("  <trk>\n")
+                        append("    <name>").append(name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")).append("</name>\n")
+                        append("    <trkseg>\n")
+                        route.geometry.forEach { gp ->
+                            append("      <trkpt lat=\"").append(gp.lat).append("\" lon=\"").append(gp.lng).append("\" />\n")
+                        }
+                        append("    </trkseg>\n")
+                        append("  </trk>\n")
+                        append("</gpx>\n")
+                    }
+
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        // API 29+: insert into MediaStore Downloads — no permission required.
+                        val values = android.content.ContentValues().apply {
+                            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                            put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/gpx+xml")
+                            put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download/OpenDash")
+                            put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                        }
+                        val resolver = context.contentResolver
+                        val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                            ?: throw Exception("MediaStore insert failed")
+                        resolver.openOutputStream(uri)?.use { it.write(gpxContent.toByteArray()) }
+                        values.clear()
+                        values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                        resolver.update(uri, values, null, null)
+                        "Saved to Downloads/OpenDash/$fileName"
+                    } else {
+                        // API < 29 fallback: save to app-external files Downloads dir.
+                        val dir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                            ?: context.filesDir
+                        val subDir = java.io.File(dir, "OpenDash").also { it.mkdirs() }
+                        val f = java.io.File(subDir, fileName)
+                        f.writeText(gpxContent)
+                        "Saved to ${f.absolutePath}"
+                    }
                 }
-                sb.append("    </trkseg>\n")
-                sb.append("  </trk>\n")
-                sb.append("</gpx>\n")
-                f.writeText(sb.toString())
-                f
             }
-            val uri = androidx.core.content.FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file
-            )
-            val sendIntent = android.content.Intent().apply {
-                action = android.content.Intent.ACTION_SEND
-                putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                type = "application/gpx+xml"
-                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            val shareIntent = android.content.Intent.createChooser(sendIntent, "Export GPX Route")
-            shareIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(shareIntent)
+            _exportMessage.value = result.getOrElse { e -> "Export failed: ${e.message}" }
         }
     }
 

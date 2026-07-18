@@ -6,6 +6,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -42,6 +44,14 @@ fun TrailsScreen(
 ) {
     val context = LocalContext.current
     val savedLocations by routeViewModel.saved.collectAsState()
+    val exportMessage by routeViewModel.exportMessage.collectAsState()
+
+    // Toast on export result
+    LaunchedEffect(exportMessage) {
+        val msg = exportMessage ?: return@LaunchedEffect
+        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+        routeViewModel.clearExportMessage()
+    }
 
     // Dialog state
     var pendingTrailForNav by remember { mutableStateOf<com.example.opendash.data.SavedLocation?>(null) }
@@ -58,11 +68,31 @@ fun TrailsScreen(
     ) { uri: Uri? ->
         if (uri != null) {
             routeViewModel.importGpxFile(context, uri)
-            onNavigateToRoute()
         }
     }
 
-    // ── Confirmation: cancel navigation to load custom trail ──
+    // State to hold the trail currently being edited
+    var editingTrail by remember { mutableStateOf<SavedLocation?>(null) }
+
+    editingTrail?.let { trail ->
+        EditLocationDialog(
+            loc = trail,
+            onSave = { name, note ->
+                routeViewModel.renameSaved(trail, name, note)
+                editingTrail = null
+            },
+            onDelete = {
+                routeViewModel.deleteSaved(trail)
+                editingTrail = null
+            },
+            onDismiss = {
+                editingTrail = null
+            },
+            showNote = false
+        )
+    }
+
+    // Confirmation: cancel navigation to load custom trail
     pendingTrailForNav?.let { trail ->
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { pendingTrailForNav = null },
@@ -161,8 +191,8 @@ fun TrailsScreen(
                             }
                         }
                     },
-                    onDelete = {
-                        routeViewModel.deleteSaved(trail)
+                    onLongPress = {
+                        editingTrail = trail
                     }
                 )
                 Spacer(Modifier.height(12.dp))
@@ -171,144 +201,59 @@ fun TrailsScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TrailCard(
     trail: SavedLocation,
     onNavigate: () -> Unit,
     onExport: () -> Unit,
-    onDelete: () -> Unit
+    onLongPress: () -> Unit,
 ) {
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-
-    if (showDeleteConfirm) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            containerColor = com.example.opendash.ui.theme.Bg1,
-            icon = {
-                Icon(
-                    OpenDashIcons.Trash,
-                    contentDescription = null,
-                    tint = Danger,
-                    modifier = Modifier.size(28.dp)
-                )
-            },
-            title = {
+    OpenDashCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onNavigate,
+                onLongClick = onLongPress
+            ),
+        padding = 10.dp
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            TrailThumbnail(trail.sid, modifier = Modifier.size(52.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
                 Text(
-                    "Delete trail?",
+                    trail.name,
                     color = TextHi,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
-                    fontFamily = GeistFamily
-                )
-            },
-            text = {
-                Text(
-                    "\"${trail.name}\" will be permanently deleted. This cannot be undone.",
-                    color = TextLo,
                     fontFamily = GeistFamily,
-                    fontSize = 14.sp
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { onDelete(); showDeleteConfirm = false }) {
-                    Text("Delete", color = Danger, fontFamily = GeistFamily, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("Cancel", color = TextLo, fontFamily = GeistFamily)
-                }
             }
-        )
-    }
-
-    OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 16.dp) {
-        Column(Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Surf2),
-                ) {
-                    Icon(
-                        OpenDashIcons.Route,
-                        contentDescription = null,
-                        tint = Gold,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        trail.name,
-                        color = TextHi,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = GeistFamily
-                    )
-                    Text(
-                        trail.note.ifBlank { "Custom recorded path" },
-                        color = TextLo,
-                        fontSize = 12.sp,
-                        fontFamily = GeistFamily
-                    )
-                }
-            }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.width(8.dp))
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Navigate/Load
+                // Export/Download
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(Surf2)
-                        .clickable { onNavigate() },
-                ) {
-                    Icon(
-                        OpenDashIcons.Navi,
-                        contentDescription = "Navigate trail",
-                        tint = TextHi,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                // Export/Share
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(36.dp)
+                        .size(34.dp)
                         .clip(CircleShape)
                         .background(Surf2)
                         .clickable { onExport() },
                 ) {
                     Icon(
-                        OpenDashIcons.Share,
+                        OpenDashIcons.Download,
                         contentDescription = "Export GPX",
-                        tint = TextLo,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                // Delete
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(Surf2)
-                        .clickable { showDeleteConfirm = true },
-                ) {
-                    Icon(
-                        OpenDashIcons.Trash,
-                        contentDescription = "Delete trail",
-                        tint = Danger,
-                        modifier = Modifier.size(16.dp)
+                        tint = TextMid,
+                        modifier = Modifier.size(15.dp)
                     )
                 }
             }
@@ -348,3 +293,132 @@ private fun EmptyTrails() {
         )
     }
 }
+
+@Composable
+private fun TrailThumbnail(trailId: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var points by remember(trailId) { mutableStateOf<List<com.example.opendash.dash.nav.GeoPoint>?>(null) }
+    val pathColor = Gold
+
+    LaunchedEffect(trailId) {
+        val pts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val file = File(context.filesDir, "route_${trailId}.json")
+                if (file.exists()) {
+                    val json = file.readText()
+                    val (routes, _) = com.example.opendash.dash.nav.Route.routesFromJson(json)
+                    routes.firstOrNull()?.geometry
+                } else null
+            } catch (e: Exception) {
+                null
+            }
+        }
+        points = pts
+    }
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Surf2)
+    ) {
+        val pts = points
+        if (pts != null && pts.size >= 2) {
+            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                var minLat = Double.MAX_VALUE
+                var maxLat = -Double.MAX_VALUE
+                var minLng = Double.MAX_VALUE
+                var maxLng = -Double.MAX_VALUE
+                for (p in pts) {
+                    if (p.lat < minLat) minLat = p.lat
+                    if (p.lat > maxLat) maxLat = p.lat
+                    if (p.lng < minLng) minLng = p.lng
+                    if (p.lng > maxLng) maxLng = p.lng
+                }
+
+                val latRange = maxLat - minLat
+                val lngRange = maxLng - minLng
+                if (latRange > 0.0 || lngRange > 0.0) {
+                    val pad = size.width * 0.15f
+                    val drawW = size.width - pad * 2
+                    val drawH = size.height - pad * 2
+
+                    val scale = if (latRange == 0.0) {
+                        drawW / lngRange
+                    } else if (lngRange == 0.0) {
+                        drawH / latRange
+                    } else {
+                        val scaleX = drawW / lngRange
+                        val scaleY = drawH / latRange
+                        kotlin.math.min(scaleX, scaleY)
+                    }
+
+                    val path = androidx.compose.ui.graphics.Path()
+                    var startX = 0f
+                    var startY = 0f
+                    var endX = 0f
+                    var endY = 0f
+                    pts.forEachIndexed { idx, gp ->
+                        val x = pad + (gp.lng - minLng) * scale + (drawW - lngRange * scale) / 2
+                        val y = pad + (maxLat - gp.lat) * scale + (drawH - latRange * scale) / 2
+                        val xF = x.toFloat()
+                        val yF = y.toFloat()
+                        if (idx == 0) {
+                            path.moveTo(xF, yF)
+                            startX = xF
+                            startY = yF
+                        } else {
+                            path.lineTo(xF, yF)
+                            if (idx == pts.size - 1) {
+                                endX = xF
+                                endY = yF
+                            }
+                        }
+                    }
+
+                    drawPath(
+                        path = path,
+                        color = pathColor,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = 2.5.dp.toPx(),
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                            join = androidx.compose.ui.graphics.StrokeJoin.Round
+                        )
+                    )
+
+                    // Draw start dot (Green)
+                    drawCircle(
+                        color = androidx.compose.ui.graphics.Color.White,
+                        radius = 3.5.dp.toPx(),
+                        center = androidx.compose.ui.geometry.Offset(startX, startY)
+                    )
+                    drawCircle(
+                        color = androidx.compose.ui.graphics.Color(0xFF4CAF50),
+                        radius = 2.dp.toPx(),
+                        center = androidx.compose.ui.geometry.Offset(startX, startY)
+                    )
+
+                    // Draw end dot (Red)
+                    drawCircle(
+                        color = androidx.compose.ui.graphics.Color.White,
+                        radius = 3.5.dp.toPx(),
+                        center = androidx.compose.ui.geometry.Offset(endX, endY)
+                    )
+                    drawCircle(
+                        color = androidx.compose.ui.graphics.Color(0xFFF44336),
+                        radius = 2.2.dp.toPx(),
+                        center = androidx.compose.ui.geometry.Offset(endX, endY)
+                    )
+                }
+            }
+        } else {
+            Icon(
+                OpenDashIcons.Route,
+                contentDescription = null,
+                tint = pathColor,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    }
+}
+
