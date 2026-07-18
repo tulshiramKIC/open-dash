@@ -337,6 +337,9 @@ fun SettingsScreen(
             )
         }
 
+        SectionLabel("API Keys")
+        ApiKeysGroup()
+
         SectionLabel("Dash Wallpaper")
         SettingsGroup(padding = 14.dp) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1047,5 +1050,194 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDashVisibilityG
         start = Offset(size.width * 0.02f, size.height - 1f),
         end = Offset(size.width * 0.98f, size.height - 1f),
         strokeWidth = 2.dp.toPx(),
+    )
+}
+
+// ── API Keys (bring-your-own, no rebuild needed) ─────────────────────────────
+
+/** One expandable block per provider: status line, setup guide, console link, and the
+ *  key field(s). Values persist via [com.example.opendash.data.ApiKeys] and take effect
+ *  immediately — user keys override any baked-in build defaults. */
+@Composable
+private fun ApiKeysGroup() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val user by com.example.opendash.data.ApiKeys.user.collectAsState()
+    var expanded by remember { mutableStateOf<String?>(null) }
+    var google by remember(user.googleMaps) { mutableStateOf(user.googleMaps) }
+    var mapbox by remember(user.mapbox) { mutableStateOf(user.mapbox) }
+    var supaUrl by remember(user.supabaseUrl) { mutableStateOf(user.supabaseUrl) }
+    var supaKey by remember(user.supabaseAnon) { mutableStateOf(user.supabaseAnon) }
+
+    fun saveAll() {
+        com.example.opendash.data.ApiKeys.save(
+            com.example.opendash.data.ApiKeys.Values(google, mapbox, supaUrl, supaKey)
+        )
+        android.widget.Toast.makeText(ctx, "API keys saved", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    fun status(userValue: String, prefKey: String): String = when {
+        userValue.isNotBlank() -> "Your key is active"
+        com.example.opendash.data.ApiKeys.hasBuildDefault(prefKey) -> "Using built-in key"
+        else -> "Not set"
+    }
+
+    SettingsGroup(padding = 6.dp) {
+        ApiKeyBlock(
+            icon = OpenDashIcons.Navi,
+            title = "Google Maps",
+            status = status(user.googleMaps, com.example.opendash.data.ApiKeys.KEY_GOOGLE),
+            open = expanded == "google",
+            onToggle = { expanded = if (expanded == "google") null else "google" },
+            guide = "NOT MANDATORY — advanced setup, skip if unsure. The Mapbox token below " +
+                "covers routing and search on its own. A Google key only upgrades routing " +
+                "to the true two-wheeler profile and improves search results.\n" +
+                "1. Go to console.cloud.google.com and create a project\n" +
+                "2. Enable \"Routes API\" and \"Places API (New)\"\n" +
+                "3. Credentials → Create credentials → API key\n" +
+                "4. Paste the key below",
+            consoleUrl = "https://console.cloud.google.com/apis/credentials",
+            onSave = ::saveAll,
+        ) {
+            ApiKeyField("Google Maps API key", google) { google = it }
+        }
+        SettingsDivider(Modifier.padding(horizontal = 6.dp))
+        ApiKeyBlock(
+            icon = OpenDashIcons.Layers,
+            title = "Mapbox",
+            status = status(user.mapbox, com.example.opendash.data.ApiKeys.KEY_MAPBOX),
+            open = expanded == "mapbox",
+            onToggle = { expanded = if (expanded == "mapbox") null else "mapbox" },
+            guide = "RECOMMENDED — this is the easy one, and without it (or a Google key) " +
+                "turn-by-turn routing won't work. Takes ~2 minutes:\n" +
+                "1. Create a free account at account.mapbox.com\n" +
+                "2. Tokens → copy your Default public token (starts with pk.)\n" +
+                "3. Paste it below",
+            consoleUrl = "https://account.mapbox.com/access-tokens/",
+            onSave = ::saveAll,
+        ) {
+            ApiKeyField("Mapbox access token (pk.…)", mapbox) { mapbox = it }
+        }
+        SettingsDivider(Modifier.padding(horizontal = 6.dp))
+        ApiKeyBlock(
+            icon = OpenDashIcons.GroupRide,
+            title = "Supabase (Group Ride)",
+            status = status(
+                if (user.supabaseUrl.isNotBlank() && user.supabaseAnon.isNotBlank()) "set" else "",
+                com.example.opendash.data.ApiKeys.KEY_SUPABASE_URL,
+            ),
+            open = expanded == "supabase",
+            onToggle = { expanded = if (expanded == "supabase") null else "supabase" },
+            guide = "Live location sharing for group rides.\n" +
+                "1. Create a free project at supabase.com\n" +
+                "2. Project Settings → API → copy the Project URL and the anon public key\n" +
+                "3. Paste both below\n\n" +
+                "Riding with friends? Everyone can use the SAME two values — the anon key " +
+                "is a shareable client key, so just send it to your group along with the " +
+                "ride code (WhatsApp is fine).",
+            consoleUrl = "https://supabase.com/dashboard",
+            onSave = ::saveAll,
+            last = true,
+        ) {
+            ApiKeyField("Project URL (https://…supabase.co)", supaUrl) { supaUrl = it }
+            Spacer(Modifier.height(8.dp))
+            ApiKeyField("anon public key (eyJ…)", supaKey) { supaKey = it }
+        }
+    }
+}
+
+@Composable
+private fun ApiKeyBlock(
+    icon: ImageVector,
+    title: String,
+    status: String,
+    open: Boolean,
+    onToggle: () -> Unit,
+    guide: String,
+    consoleUrl: String,
+    onSave: () -> Unit,
+    last: Boolean = false,
+    fields: @Composable ColumnScope.() -> Unit,
+) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .clickable { onToggle() }
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+        ) {
+            SettingsIconBubble(icon)
+            Spacer(Modifier.width(13.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
+                Text(
+                    status,
+                    color = if (status == "Not set") MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.primary,
+                    fontSize = 12.sp, fontFamily = GeistFamily,
+                )
+            }
+            Icon(
+                OpenDashIcons.ChevronRight, null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        if (open) {
+            Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 14.dp)) {
+                Text(
+                    guide,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.5.sp, fontFamily = GeistFamily, lineHeight = 18.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Open console ↗",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            runCatching {
+                                ctx.startActivity(
+                                    android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        android.net.Uri.parse(consoleUrl),
+                                    )
+                                )
+                            }
+                        }
+                        .padding(4.dp),
+                )
+                Spacer(Modifier.height(10.dp))
+                fields()
+                Spacer(Modifier.height(12.dp))
+                com.example.opendash.ui.components.OpenDashBtn(
+                    "Save keys",
+                    onClick = onSave,
+                    variant = com.example.opendash.ui.components.BtnVariant.Primary,
+                    size = com.example.opendash.ui.components.BtnSize.Sm,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        if (!last && !open) Unit
+    }
+}
+
+@Composable
+private fun ApiKeyField(label: String, value: String, onChange: (String) -> Unit) {
+    androidx.compose.material3.OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text(label, fontFamily = GeistFamily, fontSize = 12.sp) },
+        singleLine = true,
+        textStyle = androidx.compose.ui.text.TextStyle(
+            fontFamily = GeistMonoFamily, fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurface,
+        ),
+        modifier = Modifier.fillMaxWidth(),
     )
 }

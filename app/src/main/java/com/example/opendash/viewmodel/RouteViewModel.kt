@@ -513,7 +513,9 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
             recordingTrailName = name
         )
         recordingStartMillis = System.currentTimeMillis()
-        com.example.opendash.dash.DashKeepAliveService.start(getApplication())
+        com.example.opendash.dash.DashKeepAliveService.start(
+            getApplication(), com.example.opendash.dash.DashKeepAliveService.REASON_TRAIL
+        )
         runCatching {
             lm.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
@@ -541,7 +543,9 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
     fun stopRecordingRoute() {
         _state.value = _state.value.copy(isRecordingRoute = false)
         runCatching { lm.removeUpdates(gpsListener) }
-        com.example.opendash.dash.DashKeepAliveService.stop(getApplication())
+        com.example.opendash.dash.DashKeepAliveService.stop(
+            getApplication(), com.example.opendash.dash.DashKeepAliveService.REASON_TRAIL
+        )
     }
 
     fun saveRecordedRoute(name: String) {

@@ -99,7 +99,6 @@ private const val TRAIL_START_ICON = "trail-start-pin"
 // Group Ride peers: a small palette of colored rider dots (color picked by peer-id hash,
 // stable for the whole ride) + a grey one for stale riders.
 private const val PEER_ICON_PREFIX = "peer-"
-private const val PEER_ICON_STALE = "peer-stale"
 private val PEER_COLORS = intArrayOf(
     0xFFEA4335.toInt(), // red
     0xFF34A853.toInt(), // green
@@ -275,10 +274,7 @@ fun OpenDashMap(
             style.addImage(CHEVRON_ICON, chevronBitmap())
             style.addImage(DOT_ICON, riderDotBitmap())
             style.addImage(DOT_BEAM_ICON, riderDotBeamBitmap())
-            PEER_COLORS.forEachIndexed { i, color ->
-                style.addImage("$PEER_ICON_PREFIX$i", peerDotBitmap(color))
-            }
-            style.addImage(PEER_ICON_STALE, peerDotBitmap(0xFF9AA0A6.toInt()))
+            // Peer pins are added lazily per (color, initial) when peers render.
             style.addImage(DEST_ICON, destPinBitmap())
             style.addImage(STOP_ICON, stopPinBitmap())
             style.addImage(TRAIL_START_ICON, trailStartPinBitmap())
@@ -372,7 +368,25 @@ fun OpenDashMap(
                 }
             }
             allRoutes.getOrNull(selectedRouteIndex)?.let { sel ->
-                drawColoredRoute(lm, sel, routeCongestion)
+                // Active navigation: flatten the ridden part to grey — congestion only
+                // matters for road still ahead. Ahead keeps its traffic coloring.
+                val splitIdx = if (showTravelledGrey && riderLat != null && riderLng != null && sel.size >= 2) {
+                    val riderGeo = GeoPoint(riderLat, riderLng)
+                    val idx = closestPointIndex(sel, riderGeo)
+                    if (idx > 0 && GeoPoint.distMeters(riderGeo, sel[idx]) <= 50.0) idx else 0
+                } else 0
+                if (splitIdx > 0) {
+                    lm.create(
+                        LineOptions().withLatLngs(sel.subList(0, splitIdx + 1).map { LatLng(it.lat, it.lng) })
+                            .withLineColor("#9AA0A6").withLineWidth(5.5f)
+                    )
+                    val aheadCongestion =
+                        if (routeCongestion.size == sel.size - 1) routeCongestion.subList(splitIdx, routeCongestion.size)
+                        else emptyList()
+                    drawColoredRoute(lm, sel.subList(splitIdx, sel.size), aheadCongestion)
+                } else {
+                    drawColoredRoute(lm, sel, routeCongestion)
+                }
             }
             // Draw duration bubbles at the midpoints of the routes
             allRoutes.forEachIndexed { i, geo ->
@@ -414,7 +428,10 @@ fun OpenDashMap(
                         val travelled = routePoints.subList(0, splitIdx + 1)
                         lm.create(LineOptions().withLatLngs(travelled.map { LatLng(it.lat, it.lng) }).withLineColor("#9AA0A6").withLineWidth(5.5f))
                         val remaining = routePoints.subList(splitIdx, routePoints.size)
-                        drawColoredRoute(lm, remaining, congestion = emptyList())
+                        val aheadCongestion =
+                            if (routeCongestion.size == routePoints.size - 1) routeCongestion.subList(splitIdx, routeCongestion.size)
+                            else emptyList()
+                        drawColoredRoute(lm, remaining, aheadCongestion)
                     } else {
                         drawColoredRoute(lm, routePoints, routeCongestion)
                     }
@@ -464,21 +481,35 @@ fun OpenDashMap(
             )
         }
 
-        // Group Ride peers: colored dot + name label; stale riders go grey.
+        // Group Ride peers: delivery-app-style pin — colored teardrop with the rider's
+        // initial, name labeled beneath the tip. Grey pin when the rider went stale.
         peers.forEach { peer ->
-            val icon =
-                if (peer.isStale) PEER_ICON_STALE
-                else PEER_ICON_PREFIX + (Math.abs(peer.id.hashCode()) % PEER_COLORS.size)
+            val colorIdx = Math.abs(peer.id.hashCode()) % PEER_COLORS.size
+            val color = if (peer.isStale) 0xFF9AA0A6.toInt() else PEER_COLORS[colorIdx]
+            val initial = peer.name.trim().take(1).uppercase().ifBlank { "?" }
+            val iconId = "$PEER_ICON_PREFIX$colorIdx-$initial-${peer.isStale}"
+            if (style.getImage(iconId) == null) style.addImage(iconId, peerPinBitmap(color, initial))
+            // Label: name + live distance from me (straight-line), updating as either moves.
+            val label = if (riderLat != null && riderLng != null) {
+                val d = GeoPoint.distMeters(GeoPoint(riderLat, riderLng), GeoPoint(peer.lat, peer.lng))
+                peer.name + "\n" + (if (d >= 1000) "%.1f km".format(d / 1000) else "${d.toInt()} m")
+            } else peer.name
             sm.create(
                 SymbolOptions().withLatLng(LatLng(peer.lat, peer.lng))
-                    .withIconImage(icon)
+                    .withIconImage(iconId)
                     .withIconSize(1.0f)
-                    .withTextField(peer.name)
-                    .withTextSize(11f)
+                    .withIconAnchor("bottom")   // pin tip marks the exact position
+                    .withSymbolSortKey(5f)
+                    .withTextField(label)
+                    // Font MUST exist in the style's glyph set (liberty = Noto Sans only);
+                    // an unknown font 404s and silently kills the whole symbol layer.
+                    .withTextFont(arrayOf("Noto Sans Bold"))
+                    .withTextSize(12f)
                     .withTextColor(if (peer.isStale) "#9AA0A6" else "#FFFFFF")
                     .withTextHaloColor("#000000")
-                    .withTextHaloWidth(1.4f)
-                    .withTextOffset(arrayOf(0f, 1.4f))
+                    .withTextHaloWidth(1.6f)
+                    .withTextAnchor("top")
+                    .withTextOffset(arrayOf(0f, 0.4f))
             )
         }
     }
@@ -839,18 +870,55 @@ private fun riderDotBeamBitmap(): Bitmap {
     return bmp
 }
 
-/** Group Ride peer dot: white ring + colored fill (grey when the peer went stale). */
-private fun peerDotBitmap(color: Int): Bitmap {
-    val s = 56
-    val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+/** Group Ride peer pin: teardrop marker (colored fill, white ring, drop shadow) with the
+ *  rider's initial inside — delivery-app style, sized to be readable at a glance. */
+private fun peerPinBitmap(color: Int, initial: String): Bitmap {
+    val w = 76
+    val h = 92
+    val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val c = Canvas(bmp)
+    val cx = w / 2f
+    val headR = 26f
+    val headCy = 6f + headR
     val p = Paint(Paint.ANTI_ALIAS_FLAG)
-    p.color = android.graphics.Color.argb(50, 0, 0, 0)
-    c.drawCircle(s / 2f, s / 2f + 1.5f, s * 0.30f, p)
-    p.color = android.graphics.Color.WHITE
-    c.drawCircle(s / 2f, s / 2f, s * 0.28f, p)
+
+    // Soft shadow under the tip.
+    p.color = android.graphics.Color.argb(60, 0, 0, 0)
+    c.drawOval(android.graphics.RectF(cx - 13f, h - 9f, cx + 13f, h - 1f), p)
+
+    // Teardrop: circle head + tail down to the tip.
+    val tipY = h - 6f
+    val tail = Path().apply {
+        moveTo(cx - headR * 0.62f, headCy + headR * 0.72f)
+        lineTo(cx, tipY)
+        lineTo(cx + headR * 0.62f, headCy + headR * 0.72f)
+        close()
+    }
+    // White outline pass.
+    val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = android.graphics.Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 6f
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+    }
+    c.drawPath(tail, outline)
+    c.drawCircle(cx, headCy, headR, outline)
+    // Colored fill.
     p.color = color
-    c.drawCircle(s / 2f, s / 2f, s * 0.21f, p)
+    c.drawPath(tail, p)
+    c.drawCircle(cx, headCy, headR, p)
+
+    // Rider initial, white and bold, centered in the head.
+    val t = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = android.graphics.Color.WHITE
+        textSize = 30f
+        isFakeBoldText = true
+        textAlign = Paint.Align.CENTER
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+    }
+    val baseline = headCy - (t.descent() + t.ascent()) / 2f
+    c.drawText(initial, cx, baseline, t)
     return bmp
 }
 

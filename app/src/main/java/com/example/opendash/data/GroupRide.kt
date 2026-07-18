@@ -1,7 +1,6 @@
 package com.example.opendash.data
 
 import android.content.Context
-import com.example.opendash.BuildConfig
 import com.example.opendash.dash.map.LocationTracker
 import com.example.opendash.util.DebugLog
 import io.github.jan.supabase.createSupabaseClient
@@ -49,7 +48,9 @@ object GroupRide {
     private const val CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
     private const val CODE_LENGTH = 6
 
-    private const val PUBLISH_INTERVAL_MS = 4_000L
+    // Quota grows with riders² (send + everyone's receive); 5 s keeps even frequent
+    // rides at a rounding error of the free 2M msgs/month.
+    private const val PUBLISH_INTERVAL_MS = 5_000L
     private const val EVENT_POS = "pos"
     private const val EVENT_BYE = "bye"
 
@@ -81,7 +82,7 @@ object GroupRide {
     )
 
     val isConfigured: Boolean
-        get() = BuildConfig.SUPABASE_URL.isNotBlank() && BuildConfig.SUPABASE_ANON_KEY.isNotBlank()
+        get() = ApiKeys.supabaseUrl.isNotBlank() && ApiKeys.supabaseAnon.isNotBlank()
 
     private val _state = MutableStateFlow(State())
     val state = _state.asStateFlow()
@@ -94,12 +95,17 @@ object GroupRide {
     private var tracker: LocationTracker? = null
     private val peersById = LinkedHashMap<String, Peer>()
 
-    private val client by lazy {
-        createSupabaseClient(
-            supabaseUrl = BuildConfig.SUPABASE_URL,
-            supabaseKey = BuildConfig.SUPABASE_ANON_KEY,
-        ) { install(Realtime) }
-    }
+    // Rebuilt when the keys change (Settings → API Keys), so no app restart is needed.
+    private var cachedClient: io.github.jan.supabase.SupabaseClient? = null
+    private var cachedClientKeys: Pair<String, String>? = null
+    private val client: io.github.jan.supabase.SupabaseClient
+        get() {
+            val keys = ApiKeys.supabaseUrl to ApiKeys.supabaseAnon
+            cachedClient?.let { if (cachedClientKeys == keys) return it }
+            return createSupabaseClient(supabaseUrl = keys.first, supabaseKey = keys.second) {
+                install(Realtime)
+            }.also { cachedClient = it; cachedClientKeys = keys }
+        }
 
     fun init(context: Context) {
         if (appContext != null) return
@@ -153,6 +159,13 @@ object GroupRide {
                 ch.subscribe(blockUntilSubscribed = true)
                 _state.value = _state.value.copy(active = true, connecting = false)
                 DebugLog.i(TAG) { "joined ride $code as $deviceId" }
+                // Keep publishing with the screen off / app backgrounded (foreground
+                // service + wakelock, shared with dash streaming and trail recording).
+                appContext?.let {
+                    com.example.opendash.dash.DashKeepAliveService.start(
+                        it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
+                    )
+                }
 
                 val t = LocationTracker(requireNotNull(appContext)).also { tracker = it }
                 t.start()
@@ -163,6 +176,11 @@ object GroupRide {
                 }
             } catch (e: Exception) {
                 DebugLog.w(TAG) { "ride failed: ${e.message}" }
+                appContext?.let {
+                    com.example.opendash.dash.DashKeepAliveService.stop(
+                        it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
+                    )
+                }
                 _state.value = _state.value.copy(
                     active = false, connecting = false,
                     error = e.message ?: "Connection failed",
@@ -175,6 +193,11 @@ object GroupRide {
         val ch = channel
         rideJob?.cancel(); rideJob = null
         tracker?.stop(); tracker = null
+        appContext?.let {
+            com.example.opendash.dash.DashKeepAliveService.stop(
+                it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
+            )
+        }
         channel = null
         peersById.clear()
         if (ch != null) {

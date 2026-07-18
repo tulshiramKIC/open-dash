@@ -38,16 +38,43 @@ class DashKeepAliveService : Service() {
         const val ACTION_START = "com.example.opendash.DASH_START"
         const val ACTION_STOP  = "com.example.opendash.DASH_STOP"
 
-        fun start(context: Context) {
+        // The service is shared by every feature that must survive screen-off. Each
+        // holds it with its own reason; it stops only when the last reason is gone
+        // (previously trail-recording's stop() would kill the dash stream's locks).
+        const val REASON_DASH  = "dash"
+        const val REASON_TRAIL = "trail"
+        const val REASON_RIDE  = "ride"
+        private val reasons = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+        fun start(context: Context, reason: String = REASON_DASH) {
+            reasons.add(reason)
             val i = Intent(context, DashKeepAliveService::class.java).setAction(ACTION_START)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
             else context.startService(i)
         }
 
-        fun stop(context: Context) {
-            context.startService(
-                Intent(context, DashKeepAliveService::class.java).setAction(ACTION_STOP)
-            )
+        fun stop(context: Context, reason: String = REASON_DASH) {
+            val removed = reasons.remove(reason)
+            if (!removed) return
+            if (reasons.isEmpty()) {
+                context.startService(
+                    Intent(context, DashKeepAliveService::class.java).setAction(ACTION_STOP)
+                )
+            } else {
+                // Still held by another feature — just refresh the notification text.
+                context.startService(
+                    Intent(context, DashKeepAliveService::class.java).setAction(ACTION_START)
+                )
+            }
+        }
+
+        internal fun notificationContent(): Pair<String, String> = when {
+            REASON_DASH in reasons ->
+                "OpenDash — streaming to dash" to "Map is live on the Tripper. Screen can stay off."
+            REASON_TRAIL in reasons ->
+                "OpenDash — recording trail" to "GPS trail recording is running."
+            else ->
+                "OpenDash — group ride" to "Sharing your live location with the ride."
         }
     }
 
@@ -91,6 +118,7 @@ class DashKeepAliveService : Service() {
             android.content.pm.PackageManager.PERMISSION_GRANTED
 
     private fun acquireLocks() {
+        if (wakeLock != null) return   // re-entrant ACTION_START (notification refresh)
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "opendash:dash").apply {
             setReferenceCounted(false)
@@ -146,9 +174,10 @@ class DashKeepAliveService : Service() {
         else
             @Suppress("DEPRECATION") Notification.Builder(this)
 
+        val (title, text) = notificationContent()
         return builder
-            .setContentTitle("OpenDash — streaming to dash")
-            .setContentText("Map is live on the Tripper. Screen can stay off.")
+            .setContentTitle(title)
+            .setContentText(text)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(open)

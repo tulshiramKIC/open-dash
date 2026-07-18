@@ -231,6 +231,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         com.example.opendash.data.NavSettings.init(app)
+        com.example.opendash.data.ApiKeys.init(app)
         com.example.opendash.data.GroupRide.init(app)
         if (MediaInfoProvider.isAccessGranted(app)) {
             mediaInfo.start()
@@ -1142,6 +1143,14 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             destLng = destLng,
             destName = _ui.value.destinationName,
             route = route?.geometry ?: emptyList(),
+            // Ridden part of the route (drawn grey): geometry index from nav progress —
+            // cumulative distances are precomputed, so this is a cheap scan, no search.
+            travelledIdx = route?.let { rt ->
+                val cum = rt.cumulative
+                var i = 0
+                while (i < cum.size - 1 && cum[i + 1] <= progressM) i++
+                i
+            } ?: 0,
             alternates = alternateRoutes,
             maneuverText = null, // turn-by-turn maneuver banner removed
             remainingText = remainingM?.let { fmtDist(it) },

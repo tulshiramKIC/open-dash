@@ -18,9 +18,6 @@ if (project.file("google-services.json").exists()) {
 val localProperties = Properties().apply {
     rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use(::load)
 }
-val googleWebClientId = providers.gradleProperty("GOOGLE_WEB_CLIENT_ID").orNull
-    ?: localProperties.getProperty("GOOGLE_WEB_CLIENT_ID").orEmpty()
-
 // Mapbox Directions access token (bring-your-own): put MAPBOX_ACCESS_TOKEN in local.properties
 // or pass it as a Gradle property. Routing is disabled at runtime when this is blank.
 val mapboxAccessToken = providers.gradleProperty("MAPBOX_ACCESS_TOKEN").orNull
@@ -60,12 +57,6 @@ android {
         targetSdk = 36
         versionCode = 16
         versionName = "1.3.1"
-
-        buildConfigField(
-            "String",
-            "GOOGLE_WEB_CLIENT_ID",
-            "\"${googleWebClientId.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
-        )
 
         buildConfigField(
             "String",

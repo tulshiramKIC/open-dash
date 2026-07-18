@@ -49,7 +49,7 @@ object PlaceSearch {
         context: Context? = null,
     ): List<Place> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptyList()
-        if (BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank()) {
+        if (com.example.opendash.data.ApiKeys.googleMaps.isNotBlank()) {
             val google = googleSuggest(query, proxLat, proxLng, sessionToken)
             if (google.isNotEmpty()) return@withContext google
         }
@@ -85,7 +85,7 @@ object PlaceSearch {
                         .put("radius", 50000.0)))
                 }
             }
-            val resp = postJson(G_AUTOCOMPLETE, body.toString(), BuildConfig.GOOGLE_MAPS_API_KEY)
+            val resp = postJson(G_AUTOCOMPLETE, body.toString(), com.example.opendash.data.ApiKeys.googleMaps)
             val suggestions = JSONObject(resp).optJSONArray("suggestions") ?: return@withContext emptyList()
             (0 until suggestions.length()).mapNotNull { i ->
                 val p = suggestions.getJSONObject(i).optJSONObject("placePrediction") ?: return@mapNotNull null
@@ -112,7 +112,7 @@ object PlaceSearch {
                 val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8_000
                     readTimeout = 8_000
-                    setRequestProperty("X-Goog-Api-Key", BuildConfig.GOOGLE_MAPS_API_KEY)
+                    setRequestProperty("X-Goog-Api-Key", com.example.opendash.data.ApiKeys.googleMaps)
                     setRequestProperty("X-Goog-FieldMask", "location")
                 }
                 val body = conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }.also { conn.disconnect() }
@@ -131,7 +131,7 @@ object PlaceSearch {
     private suspend fun mapboxSuggest(
         query: String, proxLat: Double?, proxLng: Double?, sessionToken: String,
     ): List<Place> = withContext(Dispatchers.IO) {
-        val token = BuildConfig.MAPBOX_ACCESS_TOKEN
+        val token = com.example.opendash.data.ApiKeys.mapbox
         if (token.isBlank()) return@withContext emptyList()
         val proximity = if (proxLat != null && proxLng != null) "&proximity=$proxLng,$proxLat" else ""
         val url = "$MB_SUGGEST?q=${URLEncoder.encode(query, "UTF-8")}" +
@@ -159,7 +159,7 @@ object PlaceSearch {
     /** Resolve a Mapbox suggestion's coordinates. Null on error. */
     suspend fun retrieve(mapboxId: String, sessionToken: String): Pair<Double, Double>? =
         withContext(Dispatchers.IO) {
-            val token = BuildConfig.MAPBOX_ACCESS_TOKEN
+            val token = com.example.opendash.data.ApiKeys.mapbox
             if (token.isBlank()) return@withContext null
             val url = "$MB_RETRIEVE/${URLEncoder.encode(mapboxId, "UTF-8")}" +
                 "?session_token=${URLEncoder.encode(sessionToken, "UTF-8")}" +

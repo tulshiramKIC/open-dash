@@ -61,7 +61,7 @@ object Router {
         alternatives: Boolean = true,
         mode: TravelMode = currentMode,
     ): List<Route> = withContext(Dispatchers.IO) {
-        if (BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank() && stops.isEmpty()) {
+        if (com.example.opendash.data.ApiKeys.googleMaps.isNotBlank() && stops.isEmpty()) {
             val google = googleRoutes(from, to, stops, alternatives, mode)
             if (google.isNotEmpty()) return@withContext google
             DebugLog.w(TAG) { "Google Routes empty — falling back to Mapbox" }
@@ -99,7 +99,7 @@ object Router {
                 readTimeout = 12_000
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                setRequestProperty("X-Goog-Api-Key", BuildConfig.GOOGLE_MAPS_API_KEY)
+                setRequestProperty("X-Goog-Api-Key", com.example.opendash.data.ApiKeys.googleMaps)
                 setRequestProperty("X-Goog-FieldMask", fieldMask)
             }
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
@@ -203,7 +203,7 @@ object Router {
     private fun mapboxRoutes(
         from: GeoPoint, to: GeoPoint, stops: List<GeoPoint>, alternatives: Boolean, mode: TravelMode,
     ): List<Route> {
-        val token = BuildConfig.MAPBOX_ACCESS_TOKEN
+        val token = com.example.opendash.data.ApiKeys.mapbox
         if (token.isBlank()) {
             DebugLog.w(TAG) { "No routing provider — set GOOGLE_MAPS_API_KEY or MAPBOX_ACCESS_TOKEN" }
             return emptyList()

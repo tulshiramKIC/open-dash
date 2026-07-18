@@ -227,6 +227,8 @@ fun RouteScreen(
                 satellite = satellite,
                 showAttribution = false,
                 markerBearing = dotBearing,
+                // Grey the ridden part of the route while actually navigating.
+                showTravelledGrey = isActiveNavigation,
                 peers = groupRideState.peers,
                 modifier = Modifier.fillMaxSize(),
                 recordedPoints = routeState.recordedPoints,

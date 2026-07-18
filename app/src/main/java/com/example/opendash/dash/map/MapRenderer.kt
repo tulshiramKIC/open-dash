@@ -33,6 +33,8 @@ class MapRenderer(private val tiles: TileProvider) {
         val destLng: Double? = null,
         val destName: String? = null,
         val route: List<GeoPoint> = emptyList(),
+        /** Geometry index the rider has passed — route[0..idx] draws grey (ridden). */
+        val travelledIdx: Int = 0,
         val alternates: List<List<GeoPoint>> = emptyList(), // drawn faded under [route]
         val maneuverText: String? = null,  // e.g. "Turn left · 400 m"
         val remainingText: String? = null, // e.g. "186 km"
@@ -58,6 +60,11 @@ class MapRenderer(private val tiles: TileProvider) {
     private val routeCasing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; style = Paint.Style.STROKE
         strokeWidth = 11f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+    }
+    // Ridden part of the route: flat grey — congestion/blue only matter ahead.
+    private val travelledPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(154, 160, 166); style = Paint.Style.STROKE
+        strokeWidth = 6f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
     }
     private val routePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = routeBlue; style = Paint.Style.STROKE
@@ -161,13 +168,26 @@ class MapRenderer(private val tiles: TileProvider) {
             canvas.drawPath(routePath, altRoutePaint)
         }
 
-        // ── Road route polyline ──
+        // ── Road route polyline: ridden part grey, ahead blue ──
         if (f.route.size >= 2) {
             routePath.reset()
             routePath.moveTo(sx(f.route[0].lng), sy(f.route[0].lat))
             for (i in 1 until f.route.size) routePath.lineTo(sx(f.route[i].lng), sy(f.route[i].lat))
             canvas.drawPath(routePath, routeCasing)
-            canvas.drawPath(routePath, routePaint)
+
+            val split = f.travelledIdx.coerceIn(0, f.route.size - 1)
+            if (split > 0) {
+                routePath.reset()
+                routePath.moveTo(sx(f.route[0].lng), sy(f.route[0].lat))
+                for (i in 1..split) routePath.lineTo(sx(f.route[i].lng), sy(f.route[i].lat))
+                canvas.drawPath(routePath, travelledPaint)
+                routePath.reset()
+                routePath.moveTo(sx(f.route[split].lng), sy(f.route[split].lat))
+                for (i in split + 1 until f.route.size) routePath.lineTo(sx(f.route[i].lng), sy(f.route[i].lat))
+                canvas.drawPath(routePath, routePaint)
+            } else {
+                canvas.drawPath(routePath, routePaint)
+            }
         }
 
         // ── Destination pin ──
