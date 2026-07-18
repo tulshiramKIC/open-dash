@@ -55,8 +55,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        val uri = intent?.data ?: return
-        when (intent.action) {
+        when (intent?.action) {
+            // Share-from-Google-Maps: text lives in EXTRA_TEXT, intent.data is null.
             Intent.ACTION_SEND -> {
                 if (intent.type == "text/plain") {
                     val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
@@ -64,8 +64,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
             Intent.ACTION_VIEW -> {
-                val scheme = uri.scheme
-                if (scheme == "http" || scheme == "https" || scheme == "geo") {
+                val uri = intent.data ?: return
+                if (uri.scheme == "http" || uri.scheme == "https" || uri.scheme == "geo") {
                     routeViewModel.handleSharedText(uri.toString())
                 } else {
                     routeViewModel.importGpxFile(this, uri)
