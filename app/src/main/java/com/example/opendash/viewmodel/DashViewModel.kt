@@ -231,6 +231,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         com.example.opendash.data.NavSettings.init(app)
+        com.example.opendash.data.GroupRide.init(app)
         if (MediaInfoProvider.isAccessGranted(app)) {
             mediaInfo.start()
         }

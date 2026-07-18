@@ -84,6 +84,8 @@ fun RouteScreen(
     var activeDragIdx by remember { mutableStateOf(-1) }
     var satellite by rememberSaveable { mutableStateOf(false) }
     var recenterKey by remember { mutableStateOf(0) }
+    var showGroupRide by remember { mutableStateOf(false) }
+    val groupRideState by com.example.opendash.data.GroupRide.state.collectAsState()
     // Measured height of the route bottom sheet — the floating map controls sit just
     // above it (a fixed offset overlaps the search card on tall sheets/small screens).
     val density = androidx.compose.ui.platform.LocalDensity.current
@@ -225,6 +227,7 @@ fun RouteScreen(
                 satellite = satellite,
                 showAttribution = false,
                 markerBearing = dotBearing,
+                peers = groupRideState.peers,
                 modifier = Modifier.fillMaxSize(),
                 recordedPoints = routeState.recordedPoints,
                 stops = routeState.stops.mapNotNull { if (it.lat != null && it.lng != null) com.example.opendash.dash.nav.GeoPoint(it.lat, it.lng) else null },
@@ -475,7 +478,34 @@ fun RouteScreen(
                             }
                         }
                     }
+                    if (com.example.opendash.data.GroupRide.isConfigured) {
+                        Surface(
+                            onClick = { showGroupRide = true },
+                            shape = CircleShape,
+                            color = if (groupRideState.active) MaterialTheme.colorScheme.primaryContainer
+                                    else MaterialTheme.colorScheme.surface,
+                            shadowElevation = 4.dp,
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    OpenDashIcons.GroupRide, contentDescription = "Group ride",
+                                    tint = if (groupRideState.active) MaterialTheme.colorScheme.onPrimaryContainer
+                                           else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            }
+                        }
+                    }
                 }
+            }
+
+            if (showGroupRide) {
+                GroupRideSheet(
+                    riderLat = riderLoc?.latitude,
+                    riderLng = riderLoc?.longitude,
+                    onDismiss = { showGroupRide = false },
+                )
             }
 
             if (!isActiveNavigation && (!inRoutePreview || searchingForStopIndex >= 0 || isSearchingDestination) && !routeState.isRecordingRoute && !routeState.isPreparingRouteRecording) {

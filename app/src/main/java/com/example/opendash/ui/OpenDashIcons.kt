@@ -48,6 +48,7 @@ import androidx.compose.material.icons.outlined.Navigation
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Route
@@ -108,6 +109,7 @@ object OpenDashIcons {
     val Share         = Icons.Outlined.Share
     val Power         = Icons.Outlined.PowerSettingsNew
     val Person        = Icons.Outlined.Person
+    val GroupRide     = Icons.Outlined.Groups
     val Palette       = Icons.Outlined.Palette
     val Search        = Icons.Outlined.Search
     val Lock          = Icons.Outlined.Lock

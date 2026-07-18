@@ -317,6 +317,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                     // GPS travel bearing takes over for both.
                     val deviceAzimuth by rememberDeviceAzimuth()
                     val stationary = (ui.speedKmh ?: 0) < 5
+                    val groupRideState by com.example.opendash.data.GroupRide.state.collectAsState()
                     OpenDashMap(
                         riderLat = ui.riderLat,
                         riderLng = ui.riderLng,
@@ -334,6 +335,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                         cameraAheadOffset = true,
                         markerBearing = if (stationary) deviceAzimuth else null,
                         bikeMarker = bikeMarker,
+                        peers = groupRideState.peers,
                         modifier = Modifier.fillMaxSize(),
                         isCustomTrail = ui.isCustomTrail,
                         trailStart = ui.trailStart,

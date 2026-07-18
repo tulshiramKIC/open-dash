@@ -96,6 +96,18 @@ private const val DEST_ICON = "dest-pin"
 private const val STOP_ICON = "stop-pin"
 private const val TRAIL_START_ICON = "trail-start-pin"
 
+// Group Ride peers: a small palette of colored rider dots (color picked by peer-id hash,
+// stable for the whole ride) + a grey one for stale riders.
+private const val PEER_ICON_PREFIX = "peer-"
+private const val PEER_ICON_STALE = "peer-stale"
+private val PEER_COLORS = intArrayOf(
+    0xFFEA4335.toInt(), // red
+    0xFF34A853.toInt(), // green
+    0xFFA142F4.toInt(), // purple
+    0xFFF9AB00.toInt(), // amber
+    0xFF24C1E0.toInt(), // cyan
+)
+
 /**
  * In-app phone map (MapLibre + OpenFreeMap). Keyless and redistributable — no Google
  * Maps SDK / API key. The physical dash still uses the off-screen power-efficient renderer.
@@ -145,6 +157,8 @@ fun OpenDashMap(
     /** Nav-mode rider marker style: true = top-down bike, false = classic chevron arrow. */
     bikeMarker: Boolean = true,
     recordedPoints: List<GeoPoint> = emptyList(),
+    /** Group Ride: other riders shown as named colored dots (grey when stale). */
+    peers: List<com.example.opendash.data.GroupRide.Peer> = emptyList(),
     stops: List<GeoPoint> = emptyList(),
     isCustomTrail: Boolean = false,
     trailStart: Pair<Double, Double>? = null,
@@ -261,12 +275,17 @@ fun OpenDashMap(
             style.addImage(CHEVRON_ICON, chevronBitmap())
             style.addImage(DOT_ICON, riderDotBitmap())
             style.addImage(DOT_BEAM_ICON, riderDotBeamBitmap())
+            PEER_COLORS.forEachIndexed { i, color ->
+                style.addImage("$PEER_ICON_PREFIX$i", peerDotBitmap(color))
+            }
+            style.addImage(PEER_ICON_STALE, peerDotBitmap(0xFF9AA0A6.toInt()))
             style.addImage(DEST_ICON, destPinBitmap())
             style.addImage(STOP_ICON, stopPinBitmap())
             style.addImage(TRAIL_START_ICON, trailStartPinBitmap())
             lineMgr = LineManager(mapView, m, style)
             symbolMgr = SymbolManager(mapView, m, style).apply {
                 iconAllowOverlap = true; iconIgnorePlacement = true
+                textAllowOverlap = true; textIgnorePlacement = true
                 // North-relative icon rotation: marker bearings are absolute degrees, so
                 // they stay correct whether the camera is north-up or heading-up.
                 iconRotationAlignment = org.maplibre.android.style.layers.Property.ICON_ROTATION_ALIGNMENT_MAP
@@ -276,7 +295,7 @@ fun OpenDashMap(
     }
 
     // Redraw route + markers whenever the data or mode changes.
-    LaunchedEffect(styleReady, routePoints, routeCongestion, alternateRoutes, allRoutes, routeDurations, selectedRouteIndex, dest, stops, riderLat, riderLng, riderBearing, markerBearing, bikeMarker, navMode, recordedPoints, isCustomTrail, trailStart, showTravelledGrey) {
+    LaunchedEffect(styleReady, routePoints, routeCongestion, alternateRoutes, allRoutes, routeDurations, selectedRouteIndex, dest, stops, riderLat, riderLng, riderBearing, markerBearing, bikeMarker, navMode, recordedPoints, isCustomTrail, trailStart, showTravelledGrey, peers) {
         if (destroyed) return@LaunchedEffect
         val style = map?.style ?: return@LaunchedEffect
         val lm = lineMgr ?: return@LaunchedEffect
@@ -442,6 +461,24 @@ fun OpenDashMap(
                     .withIconImage(if (markerBearing != null) DOT_BEAM_ICON else DOT_ICON)
                     .withIconRotate(markerBearing ?: 0f)
                     .withIconSize(riderIconScale)
+            )
+        }
+
+        // Group Ride peers: colored dot + name label; stale riders go grey.
+        peers.forEach { peer ->
+            val icon =
+                if (peer.isStale) PEER_ICON_STALE
+                else PEER_ICON_PREFIX + (Math.abs(peer.id.hashCode()) % PEER_COLORS.size)
+            sm.create(
+                SymbolOptions().withLatLng(LatLng(peer.lat, peer.lng))
+                    .withIconImage(icon)
+                    .withIconSize(1.0f)
+                    .withTextField(peer.name)
+                    .withTextSize(11f)
+                    .withTextColor(if (peer.isStale) "#9AA0A6" else "#FFFFFF")
+                    .withTextHaloColor("#000000")
+                    .withTextHaloWidth(1.4f)
+                    .withTextOffset(arrayOf(0f, 1.4f))
             )
         }
     }
@@ -799,6 +836,21 @@ private fun riderDotBeamBitmap(): Bitmap {
     c.drawCircle(cx, cy, 16f, p)
     p.color = android.graphics.Color.rgb(66, 133, 244)
     c.drawCircle(cx, cy, 12f, p)
+    return bmp
+}
+
+/** Group Ride peer dot: white ring + colored fill (grey when the peer went stale). */
+private fun peerDotBitmap(color: Int): Bitmap {
+    val s = 56
+    val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    p.color = android.graphics.Color.argb(50, 0, 0, 0)
+    c.drawCircle(s / 2f, s / 2f + 1.5f, s * 0.30f, p)
+    p.color = android.graphics.Color.WHITE
+    c.drawCircle(s / 2f, s / 2f, s * 0.28f, p)
+    p.color = color
+    c.drawCircle(s / 2f, s / 2f, s * 0.21f, p)
     return bmp
 }
 

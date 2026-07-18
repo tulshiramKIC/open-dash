@@ -31,6 +31,14 @@ val mapboxAccessToken = providers.gradleProperty("MAPBOX_ACCESS_TOKEN").orNull
 val googleMapsApiKey = providers.gradleProperty("GOOGLE_MAPS_API_KEY").orNull
     ?: localProperties.getProperty("GOOGLE_MAPS_API_KEY").orEmpty()
 
+// Supabase project (bring-your-own, free tier): put SUPABASE_URL and SUPABASE_ANON_KEY in
+// local.properties. Powers the Group Ride live-location feature (Realtime broadcast);
+// the feature disables itself at runtime when these are blank.
+val supabaseUrl = providers.gradleProperty("SUPABASE_URL").orNull
+    ?: localProperties.getProperty("SUPABASE_URL").orEmpty()
+val supabaseAnonKey = providers.gradleProperty("SUPABASE_ANON_KEY").orNull
+    ?: localProperties.getProperty("SUPABASE_ANON_KEY").orEmpty()
+
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 
@@ -69,6 +77,18 @@ android {
             "String",
             "GOOGLE_MAPS_API_KEY",
             "\"${googleMapsApiKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
+        )
+
+        buildConfigField(
+            "String",
+            "SUPABASE_URL",
+            "\"${supabaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
+        )
+
+        buildConfigField(
+            "String",
+            "SUPABASE_ANON_KEY",
+            "\"${supabaseAnonKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
         )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -150,6 +170,10 @@ android {
 dependencies {
     // Renders the res/raw bike-marker SVG to a map icon bitmap at runtime.
     implementation("com.caverock:androidsvg-aar:1.4")
+    // Group Ride: Supabase Realtime broadcast channels (live rider positions, serverless).
+    implementation(platform("io.github.jan-tennert.supabase:bom:3.2.2"))
+    implementation("io.github.jan-tennert.supabase:realtime-kt")
+    implementation("io.ktor:ktor-client-okhttp:3.2.3")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
