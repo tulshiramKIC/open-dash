@@ -25,8 +25,6 @@ class MapRenderer(private val tiles: TileProvider) {
         val centerLat: Double,
         val centerLng: Double,
         val zoom: Int,
-        val panX: Float = 0f,
-        val panY: Float = 0f,
         val headingUp: Boolean = false,
         val heading: Float = 0f,           // travel bearing, degrees
         val riderLat: Double? = null,
@@ -110,8 +108,8 @@ class MapRenderer(private val tiles: TileProvider) {
         val pivotY = if (rotate) (if (tilt) h * 0.74f else h * 0.66f) else h / 2f
 
         val ts = Mercator.TILE_SIZE
-        val cx = Mercator.lngToTileX(f.centerLng, f.zoom) * ts + f.panX
-        val cy = Mercator.latToTileY(f.centerLat, f.zoom) * ts + f.panY
+        val cx = Mercator.lngToTileX(f.centerLng, f.zoom) * ts
+        val cy = Mercator.latToTileY(f.centerLat, f.zoom) * ts
         val left = cx - w / 2.0
         val top  = cy - pivotY
 

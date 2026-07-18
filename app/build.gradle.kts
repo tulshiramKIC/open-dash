@@ -148,6 +148,8 @@ android {
 }
 
 dependencies {
+    // Renders the res/raw bike-marker SVG to a map icon bitmap at runtime.
+    implementation("com.caverock:androidsvg-aar:1.4")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)

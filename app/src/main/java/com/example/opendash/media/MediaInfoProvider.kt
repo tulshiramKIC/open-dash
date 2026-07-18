@@ -66,6 +66,28 @@ class MediaInfoProvider(private val context: Context) {
         controller != null
     }.getOrDefault(false)
 
+    /** Toggle play/pause off the current playback state; falls back to play() if unknown. */
+    fun playPause(): Boolean = runCatching {
+        val c = controller ?: return false
+        if (c.playbackState?.state == PlaybackState.STATE_PLAYING) c.transportControls.pause()
+        else c.transportControls.play()
+        true
+    }.getOrDefault(false)
+
+    /** Media-stream volume steps, shown by the system volume UI. */
+    fun volumeUp() = adjustVolume(android.media.AudioManager.ADJUST_RAISE)
+    fun volumeDown() = adjustVolume(android.media.AudioManager.ADJUST_LOWER)
+
+    private fun adjustVolume(direction: Int): Boolean = runCatching {
+        val am = context.getSystemService(android.media.AudioManager::class.java)
+        am.adjustStreamVolume(
+            android.media.AudioManager.STREAM_MUSIC,
+            direction,
+            android.media.AudioManager.FLAG_SHOW_UI,
+        )
+        true
+    }.getOrDefault(false)
+
     private fun bind(sessions: List<MediaController>?) {
         val next = sessions?.firstOrNull()
         if (next?.sessionToken == controller?.sessionToken) {

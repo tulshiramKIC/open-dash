@@ -16,4 +16,5 @@ data class IncomingCall(
     val incoming: Boolean = true,
     val answerIntent: PendingIntent? = null,
     val declineIntent: PendingIntent? = null,
+    val dialing: Boolean = false,
 )

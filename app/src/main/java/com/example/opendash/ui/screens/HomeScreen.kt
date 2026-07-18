@@ -90,15 +90,7 @@ fun HomeScreen(
             .padding(horizontal = 20.dp)
             .padding(top = 8.dp, bottom = 100.dp),
     ) {
-        val call = incomingCall
-        if (call != null) {
-            CallerCard(
-                call = call,
-                onAnswer = { dashViewModel.answerCall(call) },
-                onDecline = { dashViewModel.endCall(call) }
-            )
-            Spacer(Modifier.height(16.dp))
-        }
+
         val vehicles by VehicleStore.vehicles.collectAsState()
         val activeVehicleId by VehicleStore.activeVehicleId.collectAsState()
         val activeVehicle = remember(vehicles, activeVehicleId) {
@@ -231,16 +223,7 @@ fun HomeScreen(
             }
         }
 
-        val track = nowPlaying
-        if (track != null && isNavigating) {
-            Spacer(Modifier.height(16.dp))
-            NowPlayingCard(
-                track = track,
-                onPrev = { dashViewModel.skipPrevious() },
-                onNext = { dashViewModel.skipNext() },
-                onPlayPause = { dashViewModel.playPause() }
-            )
-        }
+
 
         val activeDest = if (routeState.navigating) routeState.destination?.name else null
         if (!activeDest.isNullOrBlank()) {

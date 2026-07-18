@@ -58,10 +58,10 @@ data class DashUiState(
     val nextTurnM: Double? = null,
     val hasGps: Boolean = false,
     val gpsStatus: GpsStatus = GpsStatus.LOST,
+    val speedKmh: Int? = null,               // GPS ground speed for the preview's cluster mock
     val hasRoute: Boolean = false,
     val offRoute: Boolean = false,
     val headingUp: Boolean = true,
-    val followMode: Boolean = true,
     val thermal: String = "OK",
     // For the in-app Google Map view
     val riderLat: Double? = null,
@@ -81,6 +81,7 @@ data class DashUiState(
     val wallpaperError: String? = null,
     val pendingPairingSsid: String? = null,
     val showMediaOverlay: Boolean = false,
+    val musicMode: Boolean = false,   // joystick is in MUSIC control mode (badge shown on dash)
 )
 
 class DashViewModel(app: Application) : AndroidViewModel(app) {
@@ -121,12 +122,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var route: Route? = null
     // Alternative route geometries drawn faded under the active route on the dash frame.
     @Volatile private var alternateRoutes: List<List<GeoPoint>> = emptyList()
-    @Volatile private var panX = 0f
-    @Volatile private var panY = 0f
-    @Volatile private var zoom = 19          // nav-level zoom on the dash (street-level default)
+    @Volatile private var zoom = 15          // nav-level default zoom (between RE look and wide)
+    @Volatile private var lastManualZoomAt = 0L   // joystick/button zoom pauses auto-zoom
     @Volatile private var headingUp = true
-    @Volatile private var followMode = true
-    @Volatile private var lastManualPanAt = 0L
 
     // Smoothed camera — eased toward the latest GPS target every frame so the map
     // glides at 8 fps instead of jumping once per 1 Hz fix (the "cheap"/laggy feel).
@@ -181,19 +179,39 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var wallpaperFrameRevision = 0
 
     companion object {
-        private const val MANUAL_IDLE_MS = 8_000L
         private const val FORCE_REDRAW_MS = 2_000L
         private const val TRAFFIC_REFRESH_MS = 120_000L   // live traffic re-fetch cadence
         private const val SMOOTH_TAU = 0.28      // camera smoothing time constant (s)
         private const val FPS_MOVING = 4
         private const val FPS_IDLE = 2
-        private const val BTN_CALL_ANSWER = 0x06
-        private const val BTN_CALL_REJECT = 0x07
-        private const val BTN_MAP_ZOOM_IN = 0x14
-        private const val BTN_MAP_ZOOM_OUT = 0x13
-        private const val BTN_MEDIA_NEXT = 0x09
-        private const val BTN_MEDIA_PREVIOUS = 0x0A
+        private const val MUSIC_MODE_TIMEOUT_MS = 6_000L  // idle → auto-exit back to NORMAL
+        private const val DEFAULT_ZOOM = 15               // recenter/new-trip resets zoom to this
+        private const val AUTO_ZOOM_HOLD_MS = 20_000L     // manual zoom pauses auto-zoom this long
+
+        // Raw dash codes → logical joystick direction, during map projection.
+        // Codes confirmed from the RE app decompile + better-dash captures; UP/DOWN/PRESS
+        // are aliased (nav-context 0x13/0x14/0x15 and media-context 0x06/0x07/0x05 both map
+        // to the same gesture) so we work whichever set the dash emits. LEFT/RIGHT still
+        // want a one-time on-bike capture to confirm. See docs joystick findings.
+        private fun decodeDir(code: Int): JoyDir? = when (code) {
+            0x13, 0x06 -> JoyDir.UP
+            0x14, 0x07 -> JoyDir.DOWN
+            0x0A       -> JoyDir.LEFT
+            0x09       -> JoyDir.RIGHT
+            0x15, 0x05 -> JoyDir.PRESS
+            else       -> null
+        }
     }
+
+    /** Physical joystick gestures the dash sends while projecting the map. */
+    private enum class JoyDir { UP, DOWN, LEFT, RIGHT, PRESS }
+
+    // Two-mode joystick scheme (see docs joystick findings):
+    //  NORMAL → up/down zoom, press recenter, left/right enter MUSIC mode.
+    //  MUSIC  → up/down volume, press play/pause, left/right prev/next; auto-exits after idle.
+    @Volatile private var joyMusicMode = false
+    @Volatile private var lastJoyInputAt = 0L
+    @Volatile private var callActiveSinceMs = 0L   // wall-clock when the current call was answered
 
     /** Project a lat/lng forward [distM] metres along [bearingDeg] (great-circle). */
     private fun project(lat: Double, lng: Double, bearingDeg: Double, distM: Double): Pair<Double, Double> {
@@ -278,54 +296,65 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         session.onButton = { btn ->
             val code = btn.toInt() and 0xFF
             val call = CallInfoProvider.incomingCall.value
-            val mediaActive = mediaInfo.nowPlaying.value != null
             val label = when {
-                call?.incoming == true && code == BTN_CALL_ANSWER -> {
-                    answerCall(call)
-                    "Call answered"
-                }
-                call != null && code == BTN_CALL_REJECT -> {
-                    endCall(call)
-                    if (call.incoming) "Call rejected" else "Call ended"
-                }
-                isIdleWallpaperMode() && code == BTN_MEDIA_NEXT -> {
-                    cycleWallpaper(1)
-                    "Next wallpaper"
-                }
-                isIdleWallpaperMode() && code == BTN_MEDIA_PREVIOUS -> {
-                    cycleWallpaper(-1)
-                    "Previous wallpaper"
-                }
-                !isIdleWallpaperMode() && mediaActive && code == BTN_MEDIA_NEXT -> {
-                    triggerMediaOverlay()
-                    mediaInfo.skipNext()
-                    "Next track"
-                }
-                !isIdleWallpaperMode() && mediaActive && code == BTN_MEDIA_PREVIOUS -> {
-                    triggerMediaOverlay()
-                    mediaInfo.skipPrevious()
-                    "Previous track"
-                }
-                code == BTN_MAP_ZOOM_IN || (!mediaActive && code == BTN_MEDIA_NEXT) -> {
-                    zoomIn()
-                    "Zoom in"
-                }
-                code == BTN_MAP_ZOOM_OUT || (!mediaActive && code == BTN_MEDIA_PREVIOUS) -> {
-                    zoomOut()
-                    "Zoom out"
-                }
-                isIdleWallpaperMode() && isNextWallpaperButton(code) -> {
-                    cycleWallpaper(1)
-                    "Next wallpaper"
-                }
-                isIdleWallpaperMode() && isPreviousWallpaperButton(code) -> {
-                    cycleWallpaper(-1)
-                    "Previous wallpaper"
-                }
-                else -> "code 0x${code.toString(16).uppercase()}"
+                // 1. Active/incoming call is modal: only accept (left) / reject (right) work.
+                call != null -> handleCallButton(code, call)
+                // 2. No destination/route → dash shows wallpaper; joystick cycles it.
+                isIdleWallpaperMode() -> handleWallpaperButton(code)
+                // 3. Map projection → NORMAL / MUSIC two-mode state machine.
+                else -> handleMapButton(code)
             }
             _ui.value = _ui.value.copy(lastButton = label)
         }
+    }
+
+    private fun handleCallButton(code: Int, call: IncomingCall): String =
+        // Directions mirror the on-screen button sides: RIGHT = green accept, LEFT = red decline/end.
+        when (decodeDir(code)) {
+            JoyDir.RIGHT -> if (call.incoming) { answerCall(call); "Call answered" } else "In call"
+            JoyDir.LEFT -> { endCall(call); if (call.incoming) "Call declined" else "Call ended" }
+            else -> "Call — ◀ decline / accept ▶"   // everything else blocked during a call
+        }
+
+    private fun handleWallpaperButton(code: Int): String = when {
+        isNextWallpaperButton(code) -> { cycleWallpaper(1); "Next wallpaper" }
+        isPreviousWallpaperButton(code) -> { cycleWallpaper(-1); "Previous wallpaper" }
+        else -> "code 0x${code.toString(16).uppercase()}"
+    }
+
+    private fun handleMapButton(code: Int): String {
+        val dir = decodeDir(code) ?: return "code 0x${code.toString(16).uppercase()}"
+        lastJoyInputAt = System.currentTimeMillis()
+        return if (joyMusicMode) handleMusicMode(dir) else handleNormalMode(dir)
+    }
+
+    private fun handleNormalMode(dir: JoyDir): String = when (dir) {
+        JoyDir.UP -> { zoomIn(); "Zoom in" }
+        JoyDir.DOWN -> { zoomOut(); "Zoom out" }
+        JoyDir.PRESS -> { recenter(); "Recenter" }
+        // Left/right open MUSIC mode (a deliberate sideways flick), the badge shows on the dash.
+        JoyDir.LEFT, JoyDir.RIGHT -> { enterMusicMode(); "Music mode" }
+    }
+
+    private fun handleMusicMode(dir: JoyDir): String = when (dir) {
+        JoyDir.UP -> { mediaInfo.volumeUp(); "Volume +" }
+        JoyDir.DOWN -> { mediaInfo.volumeDown(); "Volume −" }
+        JoyDir.PRESS -> { mediaInfo.playPause(); "Play / Pause" }
+        JoyDir.LEFT -> { triggerMediaOverlay(); mediaInfo.skipPrevious(); "Previous track" }
+        JoyDir.RIGHT -> { triggerMediaOverlay(); mediaInfo.skipNext(); "Next track" }
+    }
+
+    private fun enterMusicMode() {
+        joyMusicMode = true
+        lastJoyInputAt = System.currentTimeMillis()
+        triggerMediaOverlay()
+        _ui.value = _ui.value.copy(musicMode = true)
+    }
+
+    private fun exitMusicMode() {
+        if (!joyMusicMode) return
+        joyMusicMode = false
+        _ui.value = _ui.value.copy(musicMode = false)
     }
 
     private fun refreshStage() {
@@ -614,12 +643,16 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         initialAlternates: List<Route> = emptyList()
     ) {
         val alternates = initialAlternates.filter { it != initialRoute }
+        // Fresh trip → fresh camera: nav default zoom, auto-zoom active immediately.
+        zoom = DEFAULT_ZOOM
+        lastManualZoomAt = 0L
         _ui.value = _ui.value.copy(
             destinationName = name,
             hasRoute = initialRoute != null,
             destLatLng = if (lat != null && lng != null) lat to lng else null,
             routePoints = initialRoute?.geometry ?: emptyList(),
             routeCongestion = initialRoute?.congestion ?: emptyList(),
+            mapZoom = zoom,
         )
         destLat = lat
         destLng = lng
@@ -646,7 +679,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         alternateRoutes = emptyList()
         progressM = 0.0
         offRouteSince = 0L
-        panX = 0f; panY = 0f; followMode = true
+        zoom = DEFAULT_ZOOM
         smoothEtaSec = 0.0; etaArrivalMs = 0L
         voice.resetTrip()
         lastSignature = ""   // force a redraw with no route line
@@ -659,7 +692,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             etaMinutes = null,
             maneuver = null,
             offRoute = false,
-            followMode = true,
+            mapZoom = zoom,
         )
         session.updateRouteCard("OpenDash")   // dash card → name + 0.0 km, nav off
     }
@@ -688,23 +721,12 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── Map controls ────────────────────────────────────────────────────────
 
-    fun zoomIn()  { zoom = (zoom + 1).coerceAtMost(20); _ui.value = _ui.value.copy(mapZoom = zoom) }
-    fun zoomOut() { zoom = (zoom - 1).coerceAtLeast(11); _ui.value = _ui.value.copy(mapZoom = zoom) }
-    fun panBy(dx: Float, dy: Float) = manualPan(dx, dy)
+    fun zoomIn()  { zoom = (zoom + 1).coerceAtMost(20); lastManualZoomAt = System.currentTimeMillis(); _ui.value = _ui.value.copy(mapZoom = zoom) }
+    fun zoomOut() { zoom = (zoom - 1).coerceAtLeast(11); lastManualZoomAt = System.currentTimeMillis(); _ui.value = _ui.value.copy(mapZoom = zoom) }
     fun recenter() {
-        panX = 0f; panY = 0f; followMode = true
-        _ui.value = _ui.value.copy(followMode = true)
-    }
-    fun toggleHeadingUp() {
-        headingUp = !headingUp
-        _ui.value = _ui.value.copy(headingUp = headingUp)
-    }
-
-    private fun manualPan(dx: Float, dy: Float) {
-        panX += dx; panY += dy
-        followMode = false
-        lastManualPanAt = System.currentTimeMillis()
-        _ui.value = _ui.value.copy(followMode = false)
+        // Map always follows the rider — recenter just resets zoom to the nav default.
+        zoom = DEFAULT_ZOOM
+        _ui.value = _ui.value.copy(mapZoom = zoom)
     }
 
     // ── Video + nav loop ────────────────────────────────────────────────────
@@ -792,10 +814,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Compute nav state, push nav-info to the dash, and redraw the frame only if it changed. */
     private fun tick() {
-        // Revert to follow mode after the rider stops nudging the joystick.
-        if (!followMode && System.currentTimeMillis() - lastManualPanAt > MANUAL_IDLE_MS) {
-            panX = 0f; panY = 0f; followMode = true
-            _ui.value = _ui.value.copy(followMode = true)
+        // Auto-exit MUSIC mode after the rider stops using it, back to NORMAL (map) control.
+        if (joyMusicMode && System.currentTimeMillis() - lastJoyInputAt > MUSIC_MODE_TIMEOUT_MS) {
+            exitMusicMode()
         }
 
         val loc = location.location.value
@@ -810,8 +831,12 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         var etaSec: Double? = null
         var nextManeuverForUi: com.example.opendash.dash.nav.Maneuver? = null
         var nextTurnM: Double? = null
-        // Keep the last heading on GPS dropout (tunnels) — don't snap the map to north.
-        var heading = loc?.bearing ?: (if (camInit) camHdg else 0f)
+        // Travel direction only, like Google Maps nav: trust the GPS bearing solely while
+        // actually moving. When stationary the fused provider feeds the COMPASS into
+        // loc.bearing, which would spin the map/marker as the phone is turned in hand —
+        // so below the speed gate we hold the last heading (and on GPS dropout too).
+        var heading = if (loc != null && loc.hasBearing() && loc.speed >= 1.5f) loc.bearing
+                      else (if (camInit) camHdg else 0f)
         var offRoute = false
 
         if (r != null && loc != null) {
@@ -831,7 +856,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             // "Indira Enclave" when actually at "Isha"). trackProgress is still used
             // for nav distances + off-route/reroute detection (ns.offRoute), just not
             // to move the displayed marker.
-            if (loc.speed < 0.5f) heading = ns.heading
+            // Parked/crawling on a route → face along the route, never the compass.
+            if (loc.speed < 1.5f) heading = ns.heading
             val speed = if (loc.speed > 0.5f) loc.speed.toDouble() else 11.0
             // Smooth the ETA so it doesn't flicker every second with raw speed; recompute the
             // absolute arrival clock only every 5 s so "arrives 1:32 PM" stays steady.
@@ -855,6 +881,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 arrival.get(java.util.Calendar.HOUR_OF_DAY), arrival.get(java.util.Calendar.MINUTE)
             )
             session.updateNavInfo(DashCommands.NAV_MANEUVER_CONTINUE, pv, pu, tv, tu, etaHHMM)
+            // Olive banner under the video band: per-step guidance text (like the RE
+            // app's "towards Bypass Rd"), falling back to the destination between steps.
+            val guidance = ns.nextManeuver?.instruction?.takeIf { it.isNotBlank() }
+                ?: _ui.value.destinationName
+            guidance?.let { session.updateGuidanceText(it) }
             // Spoken/chime turn guidance (no-op when voice mode is OFF).
             voice.maybeAnnounce(ns.nextManeuver, ns.nextTurnM, ns.remainingM)
         } else if (loc != null && dLat != null && dLng != null) {
@@ -879,6 +910,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         _ui.value = _ui.value.copy(
             hasGps = loc != null,
             gpsStatus = gpsStatus,
+            speedKmh = loc?.let { if (it.hasSpeed()) (it.speed * 3.6f).toInt() else 0 },
             riderLat = matchedLat,
             riderLng = matchedLng,
             riderBearing = heading,
@@ -891,6 +923,24 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         )
 
         updateThermal()
+
+        // Speed-based auto-zoom, like the RE app's Google Nav camera: z15 in town, out to
+        // z13 at highway speed. Hysteresis gaps prevent flapping at the boundaries, and a
+        // manual joystick/button zoom pauses this for AUTO_ZOOM_HOLD_MS.
+        if (loc != null && System.currentTimeMillis() - lastManualZoomAt > AUTO_ZOOM_HOLD_MS) {
+            val vKmh = loc.speed * 3.6f
+            val nz = when {
+                zoom >= 15 && vKmh >= 25f -> 14
+                zoom == 14 && vKmh >= 55f -> 13
+                zoom == 13 && vKmh <= 45f -> 14
+                zoom == 14 && vKmh <= 18f -> 15
+                else -> zoom
+            }
+            if (nz != zoom) {
+                zoom = nz
+                _ui.value = _ui.value.copy(mapZoom = nz)
+            }
+        }
 
         // ── Predictive, framerate-independent camera (CarPlay-smooth) ──
         // Capture each fresh GPS fix + its velocity for dead-reckoning.
@@ -959,11 +1009,18 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             // for buttery motion. Safe from standstill jitter because the camera is fed the
             // SMOOTHED position (which settles and stops), not raw GPS.
             append("%.6f".format(centerLat)); append("%.6f".format(centerLng))
-            append(zoom); append(panX.toInt()); append(panY.toInt())
+            append(zoom)
             append(if (headingUp) (camHeading * 10).toInt() else 0)
             append(remainingM?.let { (it / 100).toInt() } ?: -1) // 100 m resolution to avoid jitter
             append(if (r != null) r.geometry.size else 0)
-            append(CallInfoProvider.incomingCall.value?.takeIf { it.incoming }?.caller.orEmpty())
+            // Overlay state that changes the frame: call card (incoming or active) + music-mode badge.
+            CallInfoProvider.incomingCall.value?.let {
+                append(it.caller); append(it.incoming)
+                // Active-call duration ticks each second → redraw at 1 s granularity.
+                if (!it.incoming && callActiveSinceMs > 0L)
+                    append((System.currentTimeMillis() - callActiveSinceMs) / 1000)
+            }
+            append(joyMusicMode)
         }
         val now = System.currentTimeMillis()
         if (sig != lastSignature || now - lastRedrawAt > FORCE_REDRAW_MS) {
@@ -1070,8 +1127,6 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             centerLat = centerLat,
             centerLng = centerLng,
             zoom = zoom,
-            panX = panX,
-            panY = panY,
             headingUp = headingUp && (loc != null),
             heading = heading,
             riderLat = frameRiderLat,
@@ -1102,6 +1157,36 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         mapRenderer.draw(canvas, frame)
         drawCallOverlay(canvas, bmp.width, bmp.height)
         drawMediaOverlay(canvas, bmp.width, bmp.height)
+        if (_ui.value.musicMode) drawMusicModeBadge(canvas, bmp.width, bmp.height)
+    }
+
+    /** Small pill at the bottom of the round dash telling the rider the joystick is in
+     *  MUSIC control mode (so up/down = volume, left/right = track, not zoom/pan). */
+    private fun drawMusicModeBadge(canvas: Canvas, width: Int, height: Int) {
+        val cx = width / 2f
+        val label = "♪ MUSIC"
+        badgeText.textAlign = android.graphics.Paint.Align.CENTER
+        val tw = badgeText.measureText(label)
+        val padH = 12f; val padV = 6f
+        val boxW = tw + padH * 2f; val boxH = badgeText.textSize + padV * 2f
+        val top = height * 0.80f
+        val rect = android.graphics.RectF(cx - boxW / 2f, top, cx + boxW / 2f, top + boxH)
+        canvas.drawRoundRect(rect, boxH / 2f, boxH / 2f, badgeBg)
+        canvas.drawText(label, cx, top + padV + badgeText.textSize * 0.82f, badgeText)
+    }
+
+    private val badgeBg by lazy {
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xE6000000.toInt()
+        }
+    }
+    private val badgeText by lazy {
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            textSize = 11f
+            isFakeBoldText = true
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+        }
     }
 
     private val mediaOverlayBackground by lazy {
@@ -1416,45 +1501,91 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private val callOverlayBackground by lazy {
+    private val callArcName by lazy {
         android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xDD0B0D0E.toInt()
+            color = 0xFF1E2022.toInt()   // dark text on the frosted arc, matching the music title
+            textSize = 11f
+            isFakeBoldText = true
         }
     }
-    private val callOverlayTitle by lazy {
-        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.WHITE
-            textSize = 15f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            textAlign = android.graphics.Paint.Align.CENTER
-        }
+    // Material phone glyphs (white) rasterized once for drawing inside the colored circles.
+    private fun rasterizeIcon(resId: Int, sizePx: Int): Bitmap {
+        val d = androidx.core.content.ContextCompat.getDrawable(getApplication(), resId)!!
+        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        d.setBounds(0, 0, sizePx, sizePx)
+        d.draw(Canvas(bmp))
+        return bmp
     }
-    private val callOverlayLabel by lazy {
-        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFF2A93B.toInt()
-            textSize = 10f
-            textAlign = android.graphics.Paint.Align.CENTER
-        }
+    private val callIconAccept by lazy { rasterizeIcon(com.example.opendash.R.drawable.ic_call, 28) }
+    private val callIconEnd by lazy { rasterizeIcon(com.example.opendash.R.drawable.ic_call_end, 28) }
+
+    private fun fmtCallDuration(ms: Long): String {
+        val s = (ms / 1000).coerceAtLeast(0)
+        return "%d:%02d".format(s / 60, s % 60)
     }
 
+    /** Incoming/active-call overlay on the dash frame — the SAME top-arc treatment as the
+     *  music overlay, laid over the live map (no dim). Incoming: red decline (left) + caller
+     *  + green accept (right). Active: red end (left) + "caller • duration".
+     *  Joystick mirrors the button sides: LEFT = decline/end, RIGHT = accept. */
     private fun drawCallOverlay(canvas: Canvas, width: Int, height: Int) {
         val call = CallInfoProvider.incomingCall.value ?: return
-        if (!call.incoming) return
         val centerX = width / 2f
         val centerY = height / 2f
-        val halfWidth = height * 0.30f
-        canvas.drawRoundRect(
-            centerX - halfWidth,
-            centerY - 27f,
-            centerX + halfWidth,
-            centerY + 27f,
-            10f,
-            10f,
-            callOverlayBackground,
-        )
-        val caller = if (call.caller.length > 16) call.caller.take(15) + "..." else call.caller
-        canvas.drawText(caller, centerX, centerY - 2f, callOverlayTitle)
-        canvas.drawText("UP answer | DOWN reject", centerX, centerY + 17f, callOverlayLabel)
+        val Rc = 134f
+        val iconD = 22f
+        val spacing = 7f
+        val edgePadding = 14f
+
+        val duration = if (!call.incoming && callActiveSinceMs > 0L)
+            "  •  " + fmtCallDuration(System.currentTimeMillis() - callActiveSinceMs) else ""
+        val label = (call.caller + duration).let { if (it.length > 20) it.take(19) + "…" else it }
+        val textWidth = callArcName.measureText(label)
+
+        // Content laid along the arc: leftIcon + gap + text (+ gap + rightIcon when incoming).
+        val contentWidth = iconD + spacing + textWidth + (if (call.incoming) spacing + iconD else 0f)
+        val totalLength = edgePadding * 2f + contentWidth
+        val sweepAngle = ((totalLength / Rc) * (180f / Math.PI.toFloat())).coerceIn(45f, 150f)
+        val startAngle = 270f - sweepAngle / 2f
+        val endAngle = 270f + sweepAngle / 2f
+
+        val arcPath = android.graphics.Path().apply {
+            addArc(android.graphics.RectF(centerX - Rc, centerY - Rc, centerX + Rc, centerY + Rc), startAngle, sweepAngle)
+        }
+        // Frosted-white gradient arc, identical treatment to the music overlay so it reads over the map.
+        val fStart = startAngle / 360f; val fCenter = 270f / 360f; val fEnd = endAngle / 360f
+        val positions = floatArrayOf(0f, maxOf(0f, fStart), fCenter, fEnd, 1f)
+        val borderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+        canvas.drawPath(arcPath, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = 30f; strokeCap = android.graphics.Paint.Cap.BUTT
+            shader = android.graphics.SweepGradient(centerX, centerY, borderColors, positions)
+        })
+        val bgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xE6FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+        canvas.drawPath(arcPath, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = 28f; strokeCap = android.graphics.Paint.Cap.BUTT
+            shader = android.graphics.SweepGradient(centerX, centerY, bgColors, positions)
+        })
+
+        val arcLength = Rc * (sweepAngle * Math.PI / 180.0).toFloat()
+        val startOffset = (arcLength - contentWidth) / 2f
+
+        fun placeIcon(offset: Float, circleColor: Int, icon: Bitmap) {
+            val ang = startAngle + (offset / Rc) * (180f / Math.PI.toFloat())
+            val t = ang * (Math.PI / 180.0)
+            val x = (centerX + Rc * Math.cos(t)).toFloat()
+            val y = (centerY + Rc * Math.sin(t)).toFloat()
+            canvas.drawCircle(x, y, iconD / 2f, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = circleColor })
+            val s = iconD * 0.6f
+            canvas.drawBitmap(icon, null, android.graphics.RectF(x - s / 2f, y - s / 2f, x + s / 2f, y + s / 2f), null)
+        }
+
+        // Left = decline (incoming) / end (active), red.
+        placeIcon(startOffset + iconD / 2f, 0xFFFF3B30.toInt(), callIconEnd)
+        // Caller (+ duration) text, curved along the arc after the left icon.
+        callArcName.textAlign = android.graphics.Paint.Align.LEFT
+        canvas.drawTextOnPath(label, arcPath, startOffset + iconD + spacing, 4f, callArcName)
+        // Right = accept, green — only while ringing.
+        if (call.incoming) placeIcon(startOffset + contentWidth - iconD / 2f, 0xFF34C759.toInt(), callIconAccept)
     }
 
     // ── Monotonic route-progress tracker ────────────────────────────────────
@@ -1555,7 +1686,16 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             }
             launch {
                 CallInfoProvider.incomingCall.collect { call ->
+                    // Stamp the moment a call goes active (answered), for the on-dash duration.
+                    callActiveSinceMs = when {
+                        call == null || call.incoming -> 0L
+                        callActiveSinceMs == 0L -> System.currentTimeMillis()
+                        else -> callActiveSinceMs
+                    }
                     session.updateCall(call?.caller)
+                    if (call != null) {
+                        runCatching { mediaInfo.pause() }
+                    }
                 }
             }
         }

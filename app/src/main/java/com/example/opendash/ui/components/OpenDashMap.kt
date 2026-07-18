@@ -15,7 +15,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.opendash.dash.nav.GeoPoint
@@ -37,6 +36,39 @@ import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.RasterSource
 import org.maplibre.android.style.sources.TileSet
+import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import androidx.compose.runtime.State
+
+/** Device compass azimuth (degrees from north), from the rotation-vector sensor.
+ *  Quantized to 5° steps so consumers don't re-render on every sensor tick. Used to spin
+ *  the rider marker's arrow while standing still, Google-blue-dot style — never the camera. */
+@Composable
+fun rememberDeviceAzimuth(): State<Float> {
+    val context = LocalContext.current
+    val azimuth = remember { mutableStateOf(0f) }
+    DisposableEffect(Unit) {
+        val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        val sensor = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        val listener = object : SensorEventListener {
+            private val rot = FloatArray(9)
+            private val orient = FloatArray(3)
+            override fun onSensorChanged(e: SensorEvent) {
+                SensorManager.getRotationMatrixFromVector(rot, e.values)
+                SensorManager.getOrientation(rot, orient)
+                val deg = (Math.toDegrees(orient[0].toDouble()).toFloat() + 360f) % 360f
+                azimuth.value = (deg / 5f).toInt() * 5f
+            }
+            override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+        }
+        if (sensor != null) sm.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_UI)
+        onDispose { sm.unregisterListener(listener) }
+    }
+    return azimuth
+}
 
 // Free, keyless, redistributable vector basemap (look-first, per the distribution decision).
 // Shared with OfflineMaps so downloaded tile regions match what the live map requests.
@@ -56,8 +88,10 @@ private const val NAV_ZOOM = 17.5
 private const val NAV_TILT = 0.0
 private const val PREVIEW_TOP_PADDING = 320
 private const val PREVIEW_BOTTOM_PADDING = 1500
-private const val RIDER_ICON = "rider-chevron"
+private const val RIDER_ICON = "rider-bike"
+private const val CHEVRON_ICON = "rider-chevron"
 private const val DOT_ICON = "rider-dot"
+private const val DOT_BEAM_ICON = "rider-dot-beam"
 private const val DEST_ICON = "dest-pin"
 private const val STOP_ICON = "stop-pin"
 
@@ -98,7 +132,17 @@ fun OpenDashMap(
     compassBottomMarginDp: Int = 16,
     zoom: Double? = null,
     followMode: Boolean = true,
-    joystickVelocity: Offset = Offset.Zero,
+    /** Hide the ⓘ attribution button (dash preview — chrome-free like the real dash). */
+    showAttribution: Boolean = true,
+    /** Scale factor for the rider chevron/dot marker. */
+    riderIconScale: Float = 1f,
+    /** Place the rider low in the viewport so more map ahead is visible (nav follow mode). */
+    cameraAheadOffset: Boolean = false,
+    /** Overrides the MARKER arrow direction only (camera keeps [riderBearing]). Pass the
+     *  device compass azimuth while stationary for the Google-blue-dot effect. */
+    markerBearing: Float? = null,
+    /** Nav-mode rider marker style: true = top-down bike, false = classic chevron arrow. */
+    bikeMarker: Boolean = true,
     recordedPoints: List<GeoPoint> = emptyList(),
     stops: List<GeoPoint> = emptyList(),
 ) {
@@ -158,7 +202,7 @@ fun OpenDashMap(
                 compassGravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
                 val d = context.resources.displayMetrics.density
                 setCompassMargins(0, 0, (16 * d).toInt(), (compassBottomMarginDp * d).toInt())
-                isAttributionEnabled = true   // OSM/OpenFreeMap/Esri attribution (keep — licensing)
+                isAttributionEnabled = showAttribution   // OSM/OpenFreeMap/Esri attribution
                 isLogoEnabled = false
             }
             // Tap a route line or duration bubble on the map to select it (Google-style).
@@ -209,20 +253,25 @@ fun OpenDashMap(
             if (destroyed) return@setStyle
             if (satellite) addSatelliteImagery(style)
             disable3dBuildings(style)
-            style.addImage(RIDER_ICON, chevronBitmap())
+            style.addImage(RIDER_ICON, bikeMarkerBitmap(context))
+            style.addImage(CHEVRON_ICON, chevronBitmap())
             style.addImage(DOT_ICON, riderDotBitmap())
+            style.addImage(DOT_BEAM_ICON, riderDotBeamBitmap())
             style.addImage(DEST_ICON, destPinBitmap())
             style.addImage(STOP_ICON, stopPinBitmap())
             lineMgr = LineManager(mapView, m, style)
             symbolMgr = SymbolManager(mapView, m, style).apply {
                 iconAllowOverlap = true; iconIgnorePlacement = true
+                // North-relative icon rotation: marker bearings are absolute degrees, so
+                // they stay correct whether the camera is north-up or heading-up.
+                iconRotationAlignment = org.maplibre.android.style.layers.Property.ICON_ROTATION_ALIGNMENT_MAP
             }
             styleReady = true
         }
     }
 
     // Redraw route + markers whenever the data or mode changes.
-    LaunchedEffect(styleReady, routePoints, routeCongestion, alternateRoutes, allRoutes, routeDurations, selectedRouteIndex, dest, stops, riderLat, riderLng, riderBearing, navMode, recordedPoints) {
+    LaunchedEffect(styleReady, routePoints, routeCongestion, alternateRoutes, allRoutes, routeDurations, selectedRouteIndex, dest, stops, riderLat, riderLng, riderBearing, markerBearing, bikeMarker, navMode, recordedPoints) {
         if (destroyed) return@LaunchedEffect
         val style = map?.style ?: return@LaunchedEffect
         val lm = lineMgr ?: return@LaunchedEffect
@@ -292,10 +341,14 @@ fun OpenDashMap(
             // Nav: heading chevron. Otherwise: Google-style "you are here" blue dot.
             if (navMode) sm.create(
                 SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
-                    .withIconImage(RIDER_ICON).withIconRotate(riderBearing).withIconSize(1.0f)
+                    .withIconImage(if (bikeMarker) RIDER_ICON else CHEVRON_ICON)
+                    .withIconRotate(markerBearing ?: riderBearing)
+                    .withIconSize(riderIconScale)
             ) else sm.create(
                 SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
-                    .withIconImage(DOT_ICON).withIconSize(1.0f)
+                    .withIconImage(if (markerBearing != null) DOT_BEAM_ICON else DOT_ICON)
+                    .withIconRotate(markerBearing ?: 0f)
+                    .withIconSize(riderIconScale)
             )
         }
     }
@@ -352,13 +405,18 @@ fun OpenDashMap(
                 }
             }
             followMode && !fitRoute && riderLat != null && riderLng != null -> {
-                // Follow modes (dash preview / navigation): keep tracking the rider.
+                // Follow modes (dash preview / navigation): keep tracking the rider. With
+                // cameraAheadOffset the rider sits low in the view (top padding pushes the
+                // camera target down) so the road ahead gets most of the screen.
                 val target = LatLng(riderLat, riderLng)
                 val z = zoom ?: if (navMode) NAV_ZOOM else FOLLOW_ZOOM
+                val topPad = if (cameraAheadOffset) mapView.height * 0.55 else 0.0
                 val pos = if (navMode)
-                    CameraPosition.Builder().target(target).zoom(z).tilt(NAV_TILT).bearing(riderBearing.toDouble()).build()
+                    CameraPosition.Builder().target(target).zoom(z).tilt(NAV_TILT).bearing(riderBearing.toDouble())
+                        .padding(0.0, topPad, 0.0, 0.0).build()
                 else
-                    CameraPosition.Builder().target(target).zoom(z).tilt(0.0).bearing(0.0).build()
+                    CameraPosition.Builder().target(target).zoom(z).tilt(0.0).bearing(0.0)
+                        .padding(0.0, topPad, 0.0, 0.0).build()
                 runCatching { m.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 600) }
             }
             riderLat != null && riderLng != null -> {
@@ -381,20 +439,6 @@ fun OpenDashMap(
         }
     }
 
-    LaunchedEffect(joystickVelocity) {
-        val m = map ?: return@LaunchedEffect
-        while (joystickVelocity.x != 0f || joystickVelocity.y != 0f) {
-            // Scroll the map camera by the velocity amount.
-            // Positive joystick x should move camera right (pan map right), positive y moves camera down (pan map down).
-            val dx = joystickVelocity.x * 12f
-            val dy = joystickVelocity.y * 12f
-            runCatching {
-                m.scrollBy(dx, dy)
-            }
-            kotlinx.coroutines.delay(16)
-        }
-    }
-
     LaunchedEffect(styleReady, recenterKey, zoom) {
         if (recenterKey == 0 || destroyed) return@LaunchedEffect
         val m = map ?: return@LaunchedEffect
@@ -403,12 +447,14 @@ fun OpenDashMap(
         if (!styleReady) return@LaunchedEffect
         val target = LatLng(lat, lng)
         val z = zoom ?: if (navMode) NAV_ZOOM else FOLLOW_ZOOM
+        val topPad = if (cameraAheadOffset) mapView.height * 0.55 else 0.0
         val position = if (navMode) {
             CameraPosition.Builder()
                 .target(target)
                 .zoom(z)
                 .tilt(NAV_TILT)
                 .bearing(riderBearing.toDouble())
+                .padding(0.0, topPad, 0.0, 0.0)
                 .build()
         } else {
             CameraPosition.Builder()
@@ -416,6 +462,7 @@ fun OpenDashMap(
                 .zoom(z)
                 .tilt(0.0)
                 .bearing(0.0)
+                .padding(0.0, topPad, 0.0, 0.0)
                 .build()
         }
         runCatching { m.animateCamera(CameraUpdateFactory.newCameraPosition(position), 500) }
@@ -535,6 +582,7 @@ private fun durationBubbleBitmap(context: android.content.Context, text: String,
 }
 
 /** Google-style blue chevron-in-a-circle, pointing "up" (rotated to heading by the symbol). */
+/** Classic navigation chevron: white arrow in a blue circle. The alternate rider marker. */
 private fun chevronBitmap(): Bitmap {
     val s = 84
     val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
@@ -549,6 +597,115 @@ private fun chevronBitmap(): Bitmap {
     c.drawPath(Path().apply {
         moveTo(cx, s * 0.24f); lineTo(s * 0.72f, s * 0.70f); lineTo(cx, s * 0.58f); lineTo(s * 0.28f, s * 0.70f); close()
     }, p)
+    return bmp
+}
+
+/** Top-down bike marker rendered from the bundled SVG asset (res/raw/bike_marker.svg,
+ *  blue shades recolored to gold). Falls back to the hand-drawn Himalayan if the SVG
+ *  fails to parse. Front points up; rotated by bearing. */
+private fun bikeMarkerBitmap(context: Context): Bitmap {
+    runCatching {
+        val svg = com.caverock.androidsvg.SVG.getFromResource(context.resources, com.example.opendash.R.raw.bike_marker)
+        val h = 120
+        val w = (h * svg.documentViewBox.width() / svg.documentViewBox.height()).toInt().coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        svg.documentWidth = w.toFloat()
+        svg.documentHeight = h.toFloat()
+        svg.renderToCanvas(Canvas(bmp))
+        return bmp
+    }
+    return drawnBikeMarkerBitmap()
+}
+
+/** Hand-drawn fallback: golden beak fender and tank, windscreen, wide bars with
+ *  handguards, black seat and tyres — with a white contrast outline. */
+private fun drawnBikeMarkerBitmap(): Bitmap {
+    val w = 64
+    val h = 112
+    val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val cx = 32f
+    val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 5f
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+    }
+    val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    fun drawPathPart(p: Path, color: Int) {
+        c.drawPath(p, outline); fill.color = color; c.drawPath(p, fill)
+    }
+    fun roundRect(l: Float, t: Float, r: Float, b: Float, rad: Float, color: Int) {
+        val rect = android.graphics.RectF(l, t, r, b)
+        c.drawRoundRect(rect, rad, rad, outline)
+        fill.color = color
+        c.drawRoundRect(rect, rad, rad, fill)
+    }
+    // Front wheel peeking out under the fender.
+    roundRect(cx - 5f, 10f, cx + 5f, 32f, 4f, 0xFF17191B.toInt())
+    // The Himalayan's pointed beak front fender (gold bodywork).
+    drawPathPart(Path().apply {
+        moveTo(cx, 2f)
+        lineTo(cx + 8f, 15f); lineTo(cx + 7f, 27f)
+        lineTo(cx - 7f, 27f); lineTo(cx - 8f, 15f)
+        close()
+    }, 0xFFC8941F.toInt())
+    // Windscreen (light slate, like the tall touring screen).
+    drawPathPart(Path().apply {
+        moveTo(cx - 10f, 27f); lineTo(cx + 10f, 27f)
+        lineTo(cx + 7f, 35f); lineTo(cx - 7f, 35f)
+        close()
+    }, 0xFF9FB4C4.toInt())
+    // Wide adventure handlebar with round handguard knobs.
+    roundRect(9f, 33f, 55f, 40f, 3.5f, 0xFF23272B.toInt())
+    c.drawCircle(11f, 36.5f, 5.5f, fill.apply { color = 0xFF2E3338.toInt() })
+    c.drawCircle(53f, 36.5f, 5.5f, fill)
+    // Fuel tank, tapering back to the seat (gold bodywork).
+    drawPathPart(Path().apply {
+        moveTo(cx - 13f, 41f); lineTo(cx + 13f, 41f)
+        quadTo(cx + 11f, 58f, cx + 8f, 66f)
+        lineTo(cx - 8f, 66f)
+        quadTo(cx - 11f, 58f, cx - 13f, 41f)
+        close()
+    }, 0xFFE0A62E.toInt())
+    // Seat, black, running back from the tank (no rider on the marker).
+    roundRect(cx - 10f, 64f, cx + 10f, 92f, 7f, 0xFF1C1E20.toInt())
+    // Rear wheel.
+    roundRect(cx - 6f, 94f, cx + 6f, 110f, 5f, 0xFF17191B.toInt())
+    return bmp
+}
+
+/** Blue dot + compass beam, Google-style: a translucent cone fanning out above the dot.
+ *  The dot sits at bitmap center, so icon rotation sweeps the beam around it. */
+private fun riderDotBeamBitmap(): Bitmap {
+    // Canvas is 2× the dot bitmap so the beam can reach twice as far; the dot keeps its
+    // original pixel size (radii are absolute, not canvas-relative).
+    val s = 192
+    val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    val cx = s / 2f
+    val cy = s / 2f
+    p.shader = android.graphics.LinearGradient(
+        cx, cy, cx, s * 0.04f,
+        android.graphics.Color.argb(120, 66, 133, 244),
+        android.graphics.Color.argb(0, 66, 133, 244),
+        android.graphics.Shader.TileMode.CLAMP,
+    )
+    c.drawPath(Path().apply {
+        moveTo(cx, cy)
+        lineTo(cx - 50f, s * 0.04f)
+        lineTo(cx + 50f, s * 0.04f)
+        close()
+    }, p)
+    p.shader = null
+    p.color = android.graphics.Color.argb(48, 66, 133, 244)
+    c.drawCircle(cx, cy, 29f, p)
+    p.color = android.graphics.Color.WHITE
+    c.drawCircle(cx, cy, 16f, p)
+    p.color = android.graphics.Color.rgb(66, 133, 244)
+    c.drawCircle(cx, cy, 12f, p)
     return bmp
 }
 

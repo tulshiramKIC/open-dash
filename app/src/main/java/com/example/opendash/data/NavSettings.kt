@@ -14,6 +14,7 @@ object NavSettings {
     private const val PREFS = "appearance"
     private const val KEY_LIVE_TRAFFIC = "live_traffic"
     private const val KEY_CUSTOM_TRAILS = "custom_trails_enabled"
+    private const val KEY_BIKE_MARKER = "bike_marker"
 
     private val _liveTraffic = MutableStateFlow(false)
     val liveTraffic = _liveTraffic.asStateFlow()
@@ -21,10 +22,15 @@ object NavSettings {
     private val _customTrailsEnabled = MutableStateFlow(true)
     val customTrailsEnabled = _customTrailsEnabled.asStateFlow()
 
+    // Dash-map rider marker style: false = arrow (fresh-install default), true = bike.
+    private val _bikeMarker = MutableStateFlow(false)
+    val bikeMarker = _bikeMarker.asStateFlow()
+
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         _liveTraffic.value = prefs.getBoolean(KEY_LIVE_TRAFFIC, false)
         _customTrailsEnabled.value = prefs.getBoolean(KEY_CUSTOM_TRAILS, true)
+        _bikeMarker.value = prefs.getBoolean(KEY_BIKE_MARKER, false)
     }
 
     fun setLiveTraffic(context: Context, on: Boolean) {
@@ -37,5 +43,11 @@ object NavSettings {
         _customTrailsEnabled.value = on
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_CUSTOM_TRAILS, on).apply()
+    }
+
+    fun setBikeMarker(context: Context, on: Boolean) {
+        _bikeMarker.value = on
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_BIKE_MARKER, on).apply()
     }
 }

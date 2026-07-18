@@ -168,6 +168,11 @@ fun RouteScreen(
         }
         Box(Modifier.fillMaxSize().background(MapBase)) {
             // ── Full-screen map ──
+            // Blue-dot compass beam: follows the phone's orientation while standing still,
+            // hands off to GPS travel bearing once moving (camera never rotates with it).
+            val deviceAzimuth by rememberDeviceAzimuth()
+            val dotBearing =
+                if ((dashUi.speedKmh ?: 0) < 5) deviceAzimuth else dashUi.riderBearing
             OpenDashMap(
                 riderLat = riderLoc?.latitude,
                 riderLng = riderLoc?.longitude,
@@ -182,6 +187,8 @@ fun RouteScreen(
                 fitRoute = !routeState.isRecordingRoute,
                 recenterKey = recenterKey,
                 satellite = satellite,
+                showAttribution = false,
+                markerBearing = dotBearing,
                 modifier = Modifier.fillMaxSize(),
                 recordedPoints = routeState.recordedPoints,
                 stops = routeState.stops.mapNotNull { if (it.lat != null && it.lng != null) com.example.opendash.dash.nav.GeoPoint(it.lat, it.lng) else null }
@@ -266,14 +273,9 @@ fun RouteScreen(
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                             .fillMaxWidth()
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    isSearchingDestination = true
-                                    routeViewModel.onSearchQueryChange("")
-                                }
-                        ) {
+                        // Not clickable: while navigation is active the card is status-only.
+                        // Ending the trip (the X) is the only way back to route planning.
+                        Column(modifier = Modifier.fillMaxWidth()) {
                             // Header row: icon + title + close btn
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
@@ -321,8 +323,9 @@ fun RouteScreen(
                             val liveDistText = dashUi.remainingKm?.let {
                                 if (it >= 10) "%.0f km".format(it) else "%.1f km".format(it)
                             } ?: routeState.distanceText
-                            val liveDurText = dashUi.etaMinutes?.let { "${it} min" }
-                                ?: routeState.durationText
+                            val liveDurText = dashUi.etaMinutes?.let {
+                                if (it >= 60) "${it / 60}h ${it % 60}m" else "$it min"
+                            } ?: routeState.durationText
                             val liveEtaText = dashUi.etaMinutes?.let {
                                 val cal = java.util.Calendar.getInstance()
                                 cal.add(java.util.Calendar.MINUTE, it)

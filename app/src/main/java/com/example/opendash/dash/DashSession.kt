@@ -128,6 +128,19 @@ class DashSession(private val scope: CoroutineScope) {
 
     fun sendRtp(packet: ByteArray) { socket?.sendRtp(packet) }
 
+    /** Swap the route-card title — the text in the dash's olive banner under the video —
+     *  without resetting nav state. Used for per-step guidance ("towards Bypass Rd"),
+     *  matching the RE app's behavior. The 1 Hz keepalive would pick the new title up
+     *  anyway; push one card now so the banner flips with the step, not a second later. */
+    fun updateGuidanceText(text: String) {
+        val t = text.trim()
+        if (t.isEmpty() || t == destinationName) return
+        destinationName = t
+        if (_state.value == DashState.READY || _state.value == DashState.STREAMING) {
+            scope.launch(Dispatchers.IO) { socket?.send(liveRouteCard(projectionOn = true)) }
+        }
+    }
+
     fun updateRouteCard(name: String) {
         destinationName = name.ifBlank { "OpenDash" }
         navActive = false   // new destination — old figures are stale until the next updateNavInfo

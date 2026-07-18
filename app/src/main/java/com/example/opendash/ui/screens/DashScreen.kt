@@ -33,7 +33,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -41,6 +40,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
+import com.example.opendash.R
+import com.example.opendash.media.IncomingCall
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.opendash.ui.OpenDashIcons
 import com.example.opendash.ui.components.*
@@ -49,6 +51,12 @@ import com.example.opendash.viewmodel.ConnStage
 import com.example.opendash.viewmodel.DashViewModel
 import com.example.opendash.dash.nav.VoiceMode
 import kotlinx.coroutines.delay
+
+/** Fraction of the round display (top-down) the streamed video actually covers on the
+ *  real Tripper Dash — the 526×300 frame lands in the upper band; below it the cluster
+ *  firmware draws the route banner and its own UI. Measured ~58% from hardware photos of
+ *  RE-app navigation projection; confirm on-bike. */
+private const val VIDEO_BAND_FRACTION = 0.58f
 
 private fun drawManeuverArrow(canvas: android.graphics.Canvas, x: Float, y: Float, size: Float, type: com.example.opendash.dash.nav.ManeuverType?, color: Int, strokeWidth: Float) {
     val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
@@ -137,36 +145,13 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
     }
 
     // Local preview state (mirrors what the dash shows)
-    var pan by remember { mutableStateOf(Offset.Zero) }
-    var adjustMode by remember { mutableStateOf(true) }
-    var joystickVelocity by remember { mutableStateOf(Offset.Zero) }
     var satellite by rememberSaveable { mutableStateOf(false) }
+    // Rider-marker style, persisted across launches; arrow on a fresh install.
+    val bikeMarker by com.example.opendash.data.NavSettings.bikeMarker.collectAsState()
+    var recenterKey by remember { mutableStateOf(0) }
 
     val voiceManager = remember { com.example.opendash.dash.nav.VoiceManager.get(context) }
     val voiceMode by voiceManager.mode.collectAsState()
-
-    // Physical joystick button → preview-only nudge (real map pan happens in the ViewModel)
-    LaunchedEffect(ui.lastButton) {
-        val b = ui.lastButton ?: return@LaunchedEffect
-        when {
-            b.startsWith("→") -> pan = Offset((pan.x - 12f).coerceIn(-46f, 46f), pan.y)
-            b.startsWith("←") -> pan = Offset((pan.x + 12f).coerceIn(-46f, 46f), pan.y)
-            b.startsWith("↓") -> pan = Offset(pan.x, (pan.y - 12f).coerceIn(-46f, 46f))
-            b.startsWith("↑") -> pan = Offset(pan.x, (pan.y + 12f).coerceIn(-46f, 46f))
-            b.startsWith("●") -> pan = Offset.Zero
-        }
-    }
-
-    LaunchedEffect(joystickVelocity, adjustMode) {
-        while (adjustMode && (joystickVelocity.x != 0f || joystickVelocity.y != 0f)) {
-            pan = Offset(
-                (pan.x - joystickVelocity.x * 2.4f).coerceIn(-46f, 46f),
-                (pan.y - joystickVelocity.y * 2.4f).coerceIn(-46f, 46f),
-            )
-            vm.panBy(joystickVelocity.x * 4f, joystickVelocity.y * 4f)
-            delay(16)
-        }
-    }
 
     val streaming = ui.stage == ConnStage.STREAMING
 
@@ -192,15 +177,6 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
             .padding(18.dp)
             .padding(bottom = 100.dp),
     ) {
-        val call = incomingCall
-        if (call != null) {
-            CallerCard(
-                call = call,
-                onAnswer = { vm.answerCall(call) },
-                onDecline = { vm.endCall(call) }
-            )
-            Spacer(Modifier.height(16.dp))
-        }
 
         ScreenHeader(
             title = "Dash view",
@@ -316,28 +292,58 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                         .background(Brush.radialGradient(listOf(GoldGlow, Color.Transparent), radius = 200f))
                 )
             }
-            // Real Google Maps, clipped to the round Tripper shape.
+            // Hardware-honest Tripper preview: the streamed video only fills the upper band
+            // of the real dash (526×300 ≈ top 54% of the circle); the bottom is the
+            // cluster firmware's own UI, mocked below so the preview matches the bike.
             Box(
                 modifier = Modifier
                     .size(272.dp)
                     .clip(CircleShape)
+                    .background(Color(0xFF07090A))
                     .border(6.dp, Color(0xFF0D0F10), CircleShape)
                     .border(2.dp, Line2, CircleShape),
             ) {
-                OpenDashMap(
-                    riderLat = ui.riderLat,
-                    riderLng = ui.riderLng,
-                    dest = ui.destLatLng,
-                    routePoints = ui.routePoints,
-                    routeCongestion = ui.routeCongestion,
-                    hasLocationPermission = hasEssentialPermissions(),
-                    navMode = ui.headingUp,
-                    riderBearing = ui.riderBearing,
-                    zoom = ui.mapZoom.toDouble(),
-                    followMode = ui.followMode,
-                    joystickVelocity = joystickVelocity,
-                    satellite = satellite,
-                    modifier = Modifier.fillMaxSize(),
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(VIDEO_BAND_FRACTION)
+                        .align(Alignment.TopCenter)
+                ) {
+                    // Google-blue-dot behavior: while standing still the marker's arrow
+                    // follows the phone's compass (map/camera unaffected); once moving,
+                    // GPS travel bearing takes over for both.
+                    val deviceAzimuth by rememberDeviceAzimuth()
+                    val stationary = (ui.speedKmh ?: 0) < 5
+                    OpenDashMap(
+                        riderLat = ui.riderLat,
+                        riderLng = ui.riderLng,
+                        dest = ui.destLatLng,
+                        routePoints = ui.routePoints,
+                        routeCongestion = ui.routeCongestion,
+                        hasLocationPermission = hasEssentialPermissions(),
+                        navMode = ui.headingUp,
+                        riderBearing = ui.riderBearing,
+                        zoom = ui.mapZoom.toDouble(),
+                        satellite = satellite,
+                        recenterKey = recenterKey,
+                        showAttribution = false,
+                        riderIconScale = 1.35f,
+                        cameraAheadOffset = true,
+                        markerBearing = if (stationary) deviceAzimuth else null,
+                        bikeMarker = bikeMarker,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+
+                NativeClusterMock(
+                    speedKmh = ui.speedKmh,
+                    // Same string the dash banner gets: per-step guidance, else destination.
+                    bannerText = ui.maneuver ?: ui.destinationName,
+                    remainingKm = ui.remainingKm,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(1f - VIDEO_BAND_FRACTION)
+                        .align(Alignment.BottomCenter),
                 )
 
                 // Overlay Next-turn Arrow icon on top of the Map view, inside the circle
@@ -375,10 +381,12 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                         if (it < 1000.0) "${it.toInt()} m" else "%.1f km".format(it / 1000.0)
                     }
 
-                    val hasMusic = ui.showMediaOverlay && nowPlaying != null
+                    val hasCall = incomingCall != null
+                    val hasMusic = ui.showMediaOverlay && nowPlaying != null && !hasCall
                     val hasNav = ui.maneuver != null
+                    val outerOccupied = hasMusic || hasCall
 
-                    if (hasMusic || hasNav) {
+                    if (outerOccupied || hasNav) {
                         val arrowPainter = rememberVectorPainter(image = arrowIcon)
                         
                         Canvas(
@@ -390,88 +398,90 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                             val centerY = h / 2f
                             val R = h / 2f
                             
-                            if (hasMusic) {
-                                // Draw Music Crescent at the outer position (Rc = R - 16.dp)
-                                val track = nowPlaying!!
-                                val title = if (track.title.length > 32) track.title.take(31) + "..." else track.title
-                                val Rc = R - 16.dp.toPx()
-                                val artSize = 18.dp.toPx()
-                                val spacing = 6.dp.toPx()
-                                val edgePadding = 14.dp.toPx()
-                                
-                                drawIntoCanvas { composeCanvas ->
-                                    val canvas = composeCanvas.nativeCanvas
-                                    val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                        color = 0xFF1E2022.toInt()
-                                        textSize = 10.sp.toPx()
-                                        isFakeBoldText = true
-                                        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-                                    }
-                                    val textWidth = textPaint.measureText(title)
-                                    val totalLength = edgePadding * 2f + artSize + spacing + textWidth
-                                    val sweepAngle = ((totalLength / Rc) * (180f / Math.PI.toFloat())).coerceIn(45f, 130f)
-                                    val startAngle = 270f - sweepAngle / 2f
-                                    val endAngle = 270f + sweepAngle / 2f
+                            if (outerOccupied) {
+                                if (hasMusic) {
+                                    // Draw Music Crescent at the outer position (Rc = R - 16.dp)
+                                    val track = nowPlaying!!
+                                    val title = if (track.title.length > 32) track.title.take(31) + "..." else track.title
+                                    val Rc = R - 16.dp.toPx()
+                                    val artSize = 18.dp.toPx()
+                                    val spacing = 6.dp.toPx()
+                                    val edgePadding = 14.dp.toPx()
                                     
-                                    val arcPath = android.graphics.Path().apply {
-                                        val rect = android.graphics.RectF(centerX - Rc, centerY - Rc, centerX + Rc, centerY + Rc)
-                                        addArc(rect, startAngle, sweepAngle)
-                                    }
-                                    
-                                    val fStart = startAngle / 360f
-                                    val fCenter = 270f / 360f
-                                    val fEnd = endAngle / 360f
-                                    val positions = floatArrayOf(0.0f, maxOf(0.0f, fStart), fCenter, fEnd, 1.0f)
-                                    
-                                    val borderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
-                                    val borderShader = android.graphics.SweepGradient(centerX, centerY, borderColors, positions)
-                                    val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                        style = android.graphics.Paint.Style.STROKE
-                                        strokeWidth = 27.5.dp.toPx()
-                                        strokeCap = android.graphics.Paint.Cap.BUTT
-                                        setShader(borderShader)
-                                    }
-                                    canvas.drawPath(arcPath, borderPaint)
-                                    
-                                    val bgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
-                                    val bgShader = android.graphics.SweepGradient(centerX, centerY, bgColors, positions)
-                                    val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                        style = android.graphics.Paint.Style.STROKE
-                                        strokeWidth = 26.dp.toPx()
-                                        strokeCap = android.graphics.Paint.Cap.BUTT
-                                        setShader(bgShader)
-                                    }
-                                    canvas.drawPath(arcPath, bgPaint)
-                                    
-                                    val arcLength = Rc * (sweepAngle * Math.PI / 180.0).toFloat()
-                                    val contentWidth = artSize + spacing + textWidth
-                                    val startOffset = (arcLength - contentWidth) / 2f
-                                    
-                                    val artOffset = startOffset + artSize / 2f
-                                    val artAngle = startAngle + (artOffset / Rc) * (180f / Math.PI.toFloat())
-                                    val thetaRad = artAngle * (Math.PI / 180.0)
-                                    val artX = (centerX + Rc * Math.cos(thetaRad)).toFloat()
-                                    val artY = (centerY + Rc * Math.sin(thetaRad)).toFloat()
-                                    
-                                    val whitePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                        color = android.graphics.Color.WHITE
-                                        style = android.graphics.Paint.Style.FILL
-                                    }
-                                    canvas.drawCircle(artX, artY, 9.5.dp.toPx(), whitePaint)
-                                    
-                                    if (track.art != null) {
-                                        canvas.save()
-                                        val clipPath = android.graphics.Path().apply {
-                                            addCircle(artX, artY, 8.dp.toPx(), android.graphics.Path.Direction.CW)
+                                    drawIntoCanvas { composeCanvas ->
+                                        val canvas = composeCanvas.nativeCanvas
+                                        val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                            color = 0xFF1E2022.toInt()
+                                            textSize = 10.sp.toPx()
+                                            isFakeBoldText = true
+                                            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
                                         }
-                                        canvas.clipPath(clipPath)
-                                        canvas.drawBitmap(track.art!!, null, android.graphics.RectF(artX - 8.dp.toPx(), artY - 8.dp.toPx(), artX + 8.dp.toPx(), artY + 8.dp.toPx()), null)
-                                        canvas.restore()
+                                        val textWidth = textPaint.measureText(title)
+                                        val totalLength = edgePadding * 2f + artSize + spacing + textWidth
+                                        val sweepAngle = ((totalLength / Rc) * (180f / Math.PI.toFloat())).coerceIn(45f, 130f)
+                                        val startAngle = 270f - sweepAngle / 2f
+                                        val endAngle = 270f + sweepAngle / 2f
+                                        
+                                        val arcPath = android.graphics.Path().apply {
+                                            val rect = android.graphics.RectF(centerX - Rc, centerY - Rc, centerX + Rc, centerY + Rc)
+                                            addArc(rect, startAngle, sweepAngle)
+                                        }
+                                        
+                                        val fStart = startAngle / 360f
+                                        val fCenter = 270f / 360f
+                                        val fEnd = endAngle / 360f
+                                        val positions = floatArrayOf(0.0f, maxOf(0.0f, fStart), fCenter, fEnd, 1.0f)
+                                        
+                                        val borderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        val borderShader = android.graphics.SweepGradient(centerX, centerY, borderColors, positions)
+                                        val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                            style = android.graphics.Paint.Style.STROKE
+                                            strokeWidth = 27.5.dp.toPx()
+                                            strokeCap = android.graphics.Paint.Cap.BUTT
+                                            setShader(borderShader)
+                                        }
+                                        canvas.drawPath(arcPath, borderPaint)
+                                        
+                                        val bgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        val bgShader = android.graphics.SweepGradient(centerX, centerY, bgColors, positions)
+                                        val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                            style = android.graphics.Paint.Style.STROKE
+                                            strokeWidth = 26.dp.toPx()
+                                            strokeCap = android.graphics.Paint.Cap.BUTT
+                                            setShader(bgShader)
+                                        }
+                                        canvas.drawPath(arcPath, bgPaint)
+                                        
+                                        val arcLength = Rc * (sweepAngle * Math.PI / 180.0).toFloat()
+                                        val contentWidth = artSize + spacing + textWidth
+                                        val startOffset = (arcLength - contentWidth) / 2f
+                                        
+                                        val artOffset = startOffset + artSize / 2f
+                                        val artAngle = startAngle + (artOffset / Rc) * (180f / Math.PI.toFloat())
+                                        val thetaRad = artAngle * (Math.PI / 180.0)
+                                        val artX = (centerX + Rc * Math.cos(thetaRad)).toFloat()
+                                        val artY = (centerY + Rc * Math.sin(thetaRad)).toFloat()
+                                        
+                                        val whitePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                            color = android.graphics.Color.WHITE
+                                            style = android.graphics.Paint.Style.FILL
+                                        }
+                                        canvas.drawCircle(artX, artY, 9.5.dp.toPx(), whitePaint)
+                                        
+                                        if (track.art != null) {
+                                            canvas.save()
+                                            val clipPath = android.graphics.Path().apply {
+                                                addCircle(artX, artY, 8.dp.toPx(), android.graphics.Path.Direction.CW)
+                                            }
+                                            canvas.clipPath(clipPath)
+                                            canvas.drawBitmap(track.art!!, null, android.graphics.RectF(artX - 8.dp.toPx(), artY - 8.dp.toPx(), artX + 8.dp.toPx(), artY + 8.dp.toPx()), null)
+                                            canvas.restore()
+                                        }
+                                        
+                                        val textStart = startOffset + artSize + spacing
+                                        textPaint.textAlign = android.graphics.Paint.Align.LEFT
+                                        canvas.drawTextOnPath(title, arcPath, textStart, 3.5.dp.toPx(), textPaint)
                                     }
-                                    
-                                    val textStart = startOffset + artSize + spacing
-                                    textPaint.textAlign = android.graphics.Paint.Align.LEFT
-                                    canvas.drawTextOnPath(title, arcPath, textStart, 3.5.dp.toPx(), textPaint)
                                 }
                                 
                                 if (hasNav) {
@@ -613,11 +623,34 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                         }
                     }
                 }
+                // Incoming/active call — arc overlay on the round dash, matching the dash video frame.
+                incomingCall?.let { activeCall -> CallDashArc(activeCall) }
             }
+
+            // The map always follows the rider; recenter is the only manual map control
+            // in-app (zoom/pan live on the bike's joystick). Tucked into the blank
+            // corner left of the round viewport.
+            OpenDashIconBtn(
+                OpenDashIcons.Recenter,
+                onClick = { vm.recenter(); recenterKey++ },
+                size = 44.dp,
+                active = true,
+                modifier = Modifier.align(Alignment.BottomEnd),
+            )
+
+            // Rider-marker style toggle (bike ⇄ arrow). Shows the icon of the OTHER
+            // style — tap to switch the marker inside the map.
+            OpenDashIconBtn(
+                if (bikeMarker) OpenDashIcons.Navi else OpenDashIcons.Motor,
+                onClick = { com.example.opendash.data.NavSettings.setBikeMarker(context, !bikeMarker) },
+                size = 44.dp,
+                modifier = Modifier.align(Alignment.TopEnd),
+            )
         }
 
+
         val track = nowPlaying
-        if (track != null) {
+        if (track != null && incomingCall == null) {
             Spacer(Modifier.height(14.dp))
             NowPlayingCard(
                 track = track,
@@ -629,33 +662,52 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
 
         Spacer(Modifier.height(14.dp))
 
-        // Live info strip — real remaining distance, ETA, zoom
+        // Live info strip — real remaining distance, ETA + satellite toggle
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             listOf(
                 Triple(
                     ui.remainingKm?.let { if (it >= 10) "%.0f".format(it) else "%.1f".format(it) } ?: "—",
                     if (ui.remainingKm != null) "km" else "", "Remaining",
                 ),
-                Triple(ui.etaMinutes?.toString() ?: "—", if (ui.etaMinutes != null) "min" else "", "ETA"),
-                Triple("z${ui.mapZoom}", "", "Zoom"),
+                ui.etaMinutes.let { mins ->
+                    when {
+                        mins == null -> Triple("—", "", "ETA")
+                        mins >= 60   -> Triple("${mins / 60}h ${mins % 60}m", "", "ETA")
+                        else         -> Triple("$mins", "min", "ETA")
+                    }
+                },
             ).forEach { (v, u, k) ->
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(Surf1)
-                        .padding(12.dp),
+                        .padding(vertical = 5.dp, horizontal = 6.dp),
                 ) {
                     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.Center) {
-                        Text(v, color = TextHi, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
+                        Text(v, color = TextHi, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
                         if (u.isNotEmpty()) {
                             Spacer(Modifier.width(3.dp))
-                            Text(u, color = TextLo, fontSize = 10.5.sp, fontFamily = GeistMonoFamily, modifier = Modifier.padding(bottom = 2.dp))
+                            Text(u, color = TextLo, fontSize = 9.5.sp, fontFamily = GeistMonoFamily, modifier = Modifier.padding(bottom = 1.dp))
                         }
                     }
-                    Text(k, color = TextLo, fontSize = 11.5.sp, fontFamily = GeistFamily, modifier = Modifier.padding(top = 3.dp))
+                    Text(k, color = TextLo, fontSize = 9.5.sp, fontFamily = GeistFamily, modifier = Modifier.padding(top = 1.dp))
                 }
+            }
+
+            // Satellite toggle tile, in the slot the zoom readout used to occupy.
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (satellite) GoldTint else Surf1)
+                    .clickable { satellite = !satellite }
+                    .padding(vertical = 5.dp, horizontal = 6.dp),
+            ) {
+                Icon(OpenDashIcons.Layers, null, tint = if (satellite) Gold else TextMid, modifier = Modifier.size(17.dp))
+                Text("Satellite", color = if (satellite) Gold else TextLo, fontSize = 9.5.sp, fontFamily = GeistFamily, modifier = Modifier.padding(top = 1.dp))
             }
         }
 
@@ -665,41 +717,11 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
         val chipMod: @Composable (Boolean, () -> Unit) -> Modifier = { active, onClick ->
             Modifier
                 .weight(1f)
-                .clip(RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(if (active) GoldTint else Surf1)
                 .clickable { onClick() }
-                .padding(vertical = 14.dp)
+                .padding(vertical = 8.dp)
         }
-
-        // Row 1: Map Adjust + Heading-up
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = chipMod(adjustMode) { adjustMode = !adjustMode }
-            ) {
-                Icon(OpenDashIcons.Cross, null, tint = if (adjustMode) Gold else TextMid, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.height(5.dp))
-                Text("Adjust", color = if (adjustMode) Gold else TextLo, fontSize = 11.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
-            }
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = chipMod(ui.headingUp) { vm.toggleHeadingUp() }
-            ) {
-                Icon(OpenDashIcons.Navi, null, tint = if (ui.headingUp) Gold else TextMid, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.height(5.dp))
-                Text("Heading-up", color = if (ui.headingUp) Gold else TextLo, fontSize = 11.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
-            }
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = chipMod(satellite) { satellite = !satellite }
-            ) {
-                Icon(OpenDashIcons.Layers, null, tint = if (satellite) Gold else TextMid, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.height(5.dp))
-                Text("Satellite", color = if (satellite) Gold else TextLo, fontSize = 11.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
 
         // Sound selector: 3 icon chips (Off / Chime / Voice)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -710,60 +732,25 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = chipMod(isOff) { voiceManager.setMode(VoiceMode.OFF) }
             ) {
-                Icon(OpenDashIcons.SpeakerOff, null, tint = if (isOff) Gold else TextMid, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.height(5.dp))
-                Text("Silent", color = if (isOff) Gold else TextLo, fontSize = 11.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
+                Icon(OpenDashIcons.SpeakerOff, null, tint = if (isOff) Gold else TextMid, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.height(3.dp))
+                Text("Silent", color = if (isOff) Gold else TextLo, fontSize = 10.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
             }
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = chipMod(isChime) { voiceManager.setMode(VoiceMode.CHIME) }
             ) {
-                Icon(OpenDashIcons.Bell, null, tint = if (isChime) Gold else TextMid, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.height(5.dp))
-                Text("Chime", color = if (isChime) Gold else TextLo, fontSize = 11.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
+                Icon(OpenDashIcons.Bell, null, tint = if (isChime) Gold else TextMid, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.height(3.dp))
+                Text("Chime", color = if (isChime) Gold else TextLo, fontSize = 10.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
             }
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = chipMod(isFull) { voiceManager.setMode(VoiceMode.FULL) }
             ) {
-                Icon(OpenDashIcons.Speaker, null, tint = if (isFull) Gold else TextMid, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.height(5.dp))
-                Text("Voice", color = if (isFull) Gold else TextLo, fontSize = 11.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // Controls: joystick + zoom (drive the actual dash map)
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(Surf1)
-                    .padding(vertical = 16.dp, horizontal = 12.dp),
-            ) {
-                Joystick(
-                    size = 128.dp,
-                    onMove = { v -> joystickVelocity = if (adjustMode) v else Offset.Zero },
-                )
-                Spacer(Modifier.height(9.dp))
-                Text("Pan", color = TextLo, fontSize = 11.5.sp, fontFamily = GeistFamily)
-            }
-
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                OpenDashIconBtn(OpenDashIcons.Plus,  onClick = { vm.zoomIn() },  size = 52.dp)
-                Text("z${ui.mapZoom}", color = Gold, fontSize = 12.sp, fontFamily = GeistMonoFamily, fontWeight = FontWeight.SemiBold)
-                OpenDashIconBtn(OpenDashIcons.Minus, onClick = { vm.zoomOut() }, size = 52.dp)
-                OpenDashIconBtn(OpenDashIcons.Recenter, onClick = { vm.recenter(); pan = Offset.Zero }, size = 52.dp, active = true)
+                Icon(OpenDashIcons.Speaker, null, tint = if (isFull) Gold else TextMid, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.height(3.dp))
+                Text("Voice", color = if (isFull) Gold else TextLo, fontSize = 10.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
             }
         }
 
@@ -791,6 +778,194 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                 size = BtnSize.Md,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+    }
+}
+
+/** Mock of the cluster firmware's own bottom section so the preview matches what the bike
+ *  really shows — our stream never covers this area. During navigation the dash draws an
+ *  olive route banner (destination + remaining km) from the protocol's route-card channel,
+ *  which mirrors exactly what we send it. Values the phone can't know (gear, fuel) are
+ *  illustrative; speed is GPS. */
+@Composable
+private fun NativeClusterMock(
+    speedKmh: Int?,
+    bannerText: String?,
+    remainingKm: Double?,
+    modifier: Modifier = Modifier,
+) {
+    val amber = Color(0xFFE9B63B)
+    val olive = Color(0xFF8F7C2E)
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) { nowMs = System.currentTimeMillis(); delay(30_000) }
+    }
+    val time = remember(nowMs) {
+        java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(nowMs))
+    }
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = modifier) {
+        // Route banner while navigating (dash renders it from our route-card data);
+        // plain amber divider when idle, like the dash's wallpaper mode.
+        if (bannerText != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(19.dp)
+                    .background(olive)
+                    .padding(horizontal = 32.dp),
+            ) {
+                Text(
+                    bannerText,
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = GeistFamily,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                remainingKm?.let {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (it >= 10) "%.0f km".format(it) else "%.1f km".format(it),
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = GeistMonoFamily,
+                    )
+                }
+            }
+        } else {
+            Box(Modifier.fillMaxWidth().height(8.dp).background(amber))
+        }
+        Spacer(Modifier.height(7.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 36.dp),
+        ) {
+            Text(time, color = amber, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
+            Spacer(Modifier.weight(1f))
+            // Gear + speed pill, like the real cluster. Gear is bike-only data → placeholder
+            // "N" in the cluster's green. Speed is live GPS, eased between fixes.
+            val animatedSpeed by animateIntAsState(
+                targetValue = speedKmh ?: 0,
+                animationSpec = tween(durationMillis = 800, easing = LinearEasing),
+                label = "clusterSpeed",
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .border(1.5.dp, amber, RoundedCornerShape(50))
+                    .padding(horizontal = 14.dp, vertical = 3.dp),
+            ) {
+                Text("N", color = Color(0xFF27C445), fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                Spacer(Modifier.width(12.dp))
+                Text("$animatedSpeed", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                Spacer(Modifier.width(4.dp))
+                Text("km/h", color = amber, fontSize = 9.5.sp, fontFamily = GeistFamily, modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+        Spacer(Modifier.height(7.dp))
+        // Fuel gauge (decorative — the bike renders the real level).
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Icon(OpenDashIcons.Fuel, null, tint = amber, modifier = Modifier.size(13.dp))
+            Spacer(Modifier.width(2.dp))
+            repeat(6) { i ->
+                Box(
+                    Modifier
+                        .width(15.dp)
+                        .height(5.dp)
+                        .background(if (i < 4) Color(0xFFDADDE0) else Color(0xFF2A2E31))
+                )
+            }
+        }
+    }
+}
+
+/** Call overlay on the round dash preview — same top-arc treatment as the music crescent,
+ *  mirroring the dash video frame's drawCallOverlay. Incoming: red decline (left) + caller
+ *  + green accept (right). Active: red end (left) + "caller • duration". */
+@Composable
+private fun CallDashArc(call: IncomingCall) {
+    val ctx = LocalContext.current
+    val acceptBmp = remember { ContextCompat.getDrawable(ctx, R.drawable.ic_call)!!.toBitmap(28, 28) }
+    val endBmp = remember { ContextCompat.getDrawable(ctx, R.drawable.ic_call_end)!!.toBitmap(28, 28) }
+    val activeSince = remember(call.incoming, call.dialing) { System.currentTimeMillis() }
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(call.incoming, call.dialing) {
+        while (!call.incoming && !call.dialing) { nowMs = System.currentTimeMillis(); delay(1000) }
+    }
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val r = size.height / 2f
+        val rc = r - 16.dp.toPx()
+        val iconD = 12.dp.toPx()
+        val spacing = 7.dp.toPx()
+        val edgePadding = 14.dp.toPx()
+        drawIntoCanvas { cc ->
+            val canvas = cc.nativeCanvas
+            val namePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFF1E2022.toInt(); textSize = 11.sp.toPx(); isFakeBoldText = true
+            }
+            val callingPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFF1E2022.toInt(); textSize = 11.sp.toPx(); isFakeBoldText = false
+            }
+            val dur = if (!call.incoming && !call.dialing) {
+                val s = ((nowMs - activeSince) / 1000).coerceAtLeast(0)
+                "  •  %d:%02d".format(s / 60, s % 60)
+            } else ""
+            val prefix = if (call.dialing) "Calling " else ""
+            val label = if (call.dialing) call.caller else (call.caller + dur).let { if (it.length > 20) it.take(19) + "…" else it }
+            val prefixWidth = if (call.dialing) callingPaint.measureText(prefix) else 0f
+            val nameWidth = namePaint.measureText(label)
+            val textWidth = prefixWidth + nameWidth
+            val showReject = !call.dialing
+            val showCallingIcon = call.dialing
+            val showLeftIcon = showReject || showCallingIcon
+            val contentWidth = (if (showLeftIcon) iconD + spacing else 0f) + textWidth + (if (call.incoming) spacing + iconD else 0f)
+            val totalLength = edgePadding * 2f + contentWidth
+            val sweep = ((totalLength / rc) * (180f / Math.PI.toFloat())).coerceIn(45f, 150f)
+            val startAngle = 270f - sweep / 2f
+            val endAngle = 270f + sweep / 2f
+            val rect = android.graphics.RectF(cx - rc, cy - rc, cx + rc, cy + rc)
+            val arcPath = android.graphics.Path().apply { addArc(rect, startAngle, sweep) }
+            val positions = floatArrayOf(0f, maxOf(0f, startAngle / 360f), 270f / 360f, endAngle / 360f, 1f)
+            canvas.drawPath(arcPath, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE; strokeWidth = 30.dp.toPx(); strokeCap = android.graphics.Paint.Cap.BUTT
+                setShader(android.graphics.SweepGradient(cx, cy, intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF), positions))
+            })
+            canvas.drawPath(arcPath, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE; strokeWidth = 28.dp.toPx(); strokeCap = android.graphics.Paint.Cap.BUTT
+                setShader(android.graphics.SweepGradient(cx, cy, intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xE6FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF), positions))
+            })
+            val arcLength = rc * (sweep * Math.PI / 180.0).toFloat()
+            val startOffset = (arcLength - contentWidth) / 2f
+            fun place(offset: Float, color: Int, bmp: android.graphics.Bitmap) {
+                val ang = startAngle + (offset / rc) * (180f / Math.PI.toFloat())
+                val t = ang * (Math.PI / 180.0)
+                val x = (cx + rc * Math.cos(t)).toFloat()
+                val y = (cy + rc * Math.sin(t)).toFloat()
+                canvas.drawCircle(x, y, iconD / 2f, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { this.color = color })
+                val s = iconD * 0.6f
+                canvas.drawBitmap(bmp, null, android.graphics.RectF(x - s / 2f, y - s / 2f, x + s / 2f, y + s / 2f), null)
+            }
+            if (showReject) {
+                place(startOffset + iconD / 2f, 0xFFFF3B30.toInt(), endBmp)
+            } else if (showCallingIcon) {
+                place(startOffset + iconD / 2f, 0xFF34C759.toInt(), acceptBmp)
+            }
+            namePaint.textAlign = android.graphics.Paint.Align.LEFT
+            val textStartOffset = if (showLeftIcon) startOffset + iconD + spacing else startOffset
+            if (call.dialing) {
+                callingPaint.textAlign = android.graphics.Paint.Align.LEFT
+                canvas.drawTextOnPath(prefix, arcPath, textStartOffset, 4.dp.toPx(), callingPaint)
+                canvas.drawTextOnPath(label, arcPath, textStartOffset + prefixWidth, 4.dp.toPx(), namePaint)
+            } else {
+                canvas.drawTextOnPath(label, arcPath, textStartOffset, 4.dp.toPx(), namePaint)
+            }
+            if (call.incoming) place(startOffset + contentWidth - iconD / 2f, 0xFF34C759.toInt(), acceptBmp)
         }
     }
 }

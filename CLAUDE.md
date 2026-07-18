@@ -103,6 +103,10 @@ is isolated:
 
 ## Recent Feature Updates & UI Polish
 
+- **Call Arc Overlay & Multi-App Interception**:
+  - Implemented real-time incoming/active call detection in `OpenDashNotificationListener.kt` via action button inspection (detects Dialer, WhatsApp, Telegram, etc. calls even without standard Android `CallStyle` classification).
+  - Designed circular `CallDashArc` overlay rendering on the in-app dashboard's map preview, displaying caller name, duration, and status alongside accept/decline action triggers.
+  - Configured next-turn navigation crescent to dynamically render at the concentric inner position (`R - 40.dp`) when a call overlay is active on the outer position (`R - 16.dp`) to avoid visual collisions.
 - **Floating Glassmorphic Bottom Navigation Bar**:
   - Redesigned as a floating, semi-transparent, circular dock with `CircleShape` corners and a semi-transparent background (copying the Telegram UI style).
   - Fully transparent system navigation bar integration via custom `enableEdgeToEdge()` in `MainActivity.kt`.
