@@ -73,7 +73,7 @@ fun GarageScreen(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(18.dp)
-            .padding(bottom = 24.dp),
+            .padding(bottom = 100.dp),
     ) {
         ScreenHeader(title = "Garage")
 

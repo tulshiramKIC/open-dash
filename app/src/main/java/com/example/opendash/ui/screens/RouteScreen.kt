@@ -1,9 +1,21 @@
 package com.example.opendash.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -45,6 +57,7 @@ fun RouteScreen(
     routeViewModel: RouteViewModel = viewModel(),
 ) {
     val routeState by routeViewModel.state.collectAsState()
+    val customTrailsEnabled by com.example.opendash.data.NavSettings.customTrailsEnabled.collectAsState()
     val dest       = routeState.destination
     val destName   = dest?.name?.ifBlank { "Shared location" } ?: "Shared location"
     val destSub    = when {
@@ -62,12 +75,20 @@ fun RouteScreen(
     var sent by remember { mutableStateOf(false) }
     var showSave by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<com.example.opendash.data.SavedLocation?>(null) }
+    var searchingForStopIndex by remember { mutableStateOf(-1) }
+    var isSearchingDestination by remember { mutableStateOf(false) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    var activeDragIdx by remember { mutableStateOf(-1) }
     var satellite by rememberSaveable { mutableStateOf(false) }
     var recenterKey by remember { mutableStateOf(0) }
     // Measured height of the route bottom sheet — the floating map controls sit just
     // above it (a fixed offset overlaps the search card on tall sheets/small screens).
     val density = androidx.compose.ui.platform.LocalDensity.current
     var sheetHeight by remember { mutableStateOf(0.dp) }
+
+    val dashViewModel: com.example.opendash.viewmodel.DashViewModel = viewModel()
+    val dashUi by dashViewModel.ui.collectAsState()
+    val isActiveNavigation = routeState.navigating
 
     // Live rider position for the "you are here" blue dot (like Google Maps).
     fun locationGranted(): Boolean = listOf(
@@ -99,7 +120,9 @@ fun RouteScreen(
 
     // Keep search proximity-biased to where the rider actually is right now.
     LaunchedEffect(riderLoc) {
-        riderLoc?.let { routeViewModel.updateOrigin(it.latitude, it.longitude) }
+        riderLoc?.let { loc ->
+            routeViewModel.updateOrigin(loc.latitude, loc.longitude)
+        }
     }
 
     val canStart = dest?.lat != null && dest.lng != null && !routeState.isResolving
@@ -114,13 +137,35 @@ fun RouteScreen(
 
     fun exitPreview() {
         routeViewModel.clear()
+        searchingForStopIndex = -1
         sent = false
     }
 
     // In-screen back: route preview → explore.
-    BackHandler(enabled = inRoutePreview) { exitPreview() }
+    // When active navigation is running, back does NOT clear it — only the X button does.
+    BackHandler(enabled = !isActiveNavigation && (inRoutePreview || searchingForStopIndex >= 0 || isSearchingDestination)) {
+        if (isSearchingDestination) {
+            isSearchingDestination = false
+        } else if (searchingForStopIndex >= 0) {
+            val currentStop = routeState.stops.getOrNull(searchingForStopIndex)
+            if (currentStop != null && currentStop.name.isBlank()) {
+                routeViewModel.removeStop(searchingForStopIndex)
+            }
+            searchingForStopIndex = -1
+        } else {
+            exitPreview()
+        }
+    }
+    // When active navigation is on, back handler just collapses search if open, otherwise no-op.
+    BackHandler(enabled = isActiveNavigation && isSearchingDestination) {
+        isSearchingDestination = false
+    }
 
     run {
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val navBarDp = with(density) {
+            androidx.compose.foundation.layout.WindowInsets.navigationBars.getBottom(this).toDp()
+        }
         Box(Modifier.fillMaxSize().background(MapBase)) {
             // ── Full-screen map ──
             OpenDashMap(
@@ -128,15 +173,190 @@ fun RouteScreen(
                 riderLng = riderLoc?.longitude,
                 dest = dest?.let { d -> if (d.lat != null && d.lng != null) d.lat to d.lng else null },
                 routePoints = routeState.route?.geometry.orEmpty(),
-                alternateRoutes = routeState.routes
-                    .filterIndexed { i, _ -> i != routeState.selectedRouteIndex }
-                    .map { it.geometry },
+                routeCongestion = routeState.route?.congestion.orEmpty(),
+                allRoutes = routeState.routes.map { it.geometry },
+                routeDurations = routeState.routes.map { routeDurationShort(it.totalSeconds) },
+                selectedRouteIndex = routeState.selectedRouteIndex,
+                onSelectRoute = { routeViewModel.selectRoute(it) },
                 hasLocationPermission = hasLocation,
-                fitRoute = true,
+                fitRoute = !routeState.isRecordingRoute,
                 recenterKey = recenterKey,
                 satellite = satellite,
                 modifier = Modifier.fillMaxSize(),
+                recordedPoints = routeState.recordedPoints,
+                stops = routeState.stops.mapNotNull { if (it.lat != null && it.lng != null) com.example.opendash.dash.nav.GeoPoint(it.lat, it.lng) else null }
             )
+
+            if (isActiveNavigation) {
+                // Active nav: floating card OR inline search overlay
+                if (isSearchingDestination) {
+                    // Inline search overlay for rerouting without leaving navigation
+                    Column(
+                        Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            OpenDashIconBtn(
+                                OpenDashIcons.ChevronLeft,
+                                onClick = { isSearchingDestination = false },
+                                size = 46.dp,
+                                modifier = Modifier.background(
+                                    MaterialTheme.colorScheme.surface,
+                                    CircleShape
+                                ),
+                            )
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.surface,
+                                shadowElevation = 4.dp,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Spacer(Modifier.width(16.dp))
+                                    Icon(
+                                        OpenDashIcons.Search, contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(21.dp),
+                                    )
+                                    androidx.compose.material3.TextField(
+                                        value = routeState.searchQuery,
+                                        onValueChange = { routeViewModel.onSearchQueryChange(it) },
+                                        placeholder = {
+                                            Text(
+                                                "Search new destination",
+                                                color = TextLo, fontSize = 15.sp, fontFamily = GeistFamily,
+                                            )
+                                        },
+                                        singleLine = true,
+                                        trailingIcon = {
+                                            if (routeState.searchQuery.isNotEmpty()) {
+                                                Icon(
+                                                    OpenDashIcons.X, contentDescription = "Clear", tint = TextMid,
+                                                    modifier = Modifier.size(20.dp).clickable { routeViewModel.onSearchQueryChange("") },
+                                                )
+                                            }
+                                        },
+                                        colors = searchFieldColors(),
+                                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, fontFamily = GeistFamily),
+                                        modifier = Modifier.weight(1f).height(52.dp),
+                                    )
+                                }
+                            }
+                        }
+                        // Search results shown inline
+                        SuggestionList(routeState.searchResults) { place ->
+                            routeViewModel.chooseSearchResult(place, stopIndex = -1)
+                            isSearchingDestination = false
+                        }
+                    }
+                } else {
+                    // Floating Active Navigation Card
+                    OpenDashCard(
+                        glow = true,
+                        padding = 14.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .statusBarsPadding()
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    isSearchingDestination = true
+                                    routeViewModel.onSearchQueryChange("")
+                                }
+                        ) {
+                            // Header row: icon + title + close btn
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    OpenDashIcons.Navi,
+                                    contentDescription = null,
+                                    tint = Gold,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "Active Navigation",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = GeistFamily,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                OpenDashIconBtn(
+                                    OpenDashIcons.X,
+                                    onClick = {
+                                        routeViewModel.clear()
+                                        dashViewModel.exitNavigation()
+                                    },
+                                    size = 32.dp,
+                                    modifier = Modifier.background(
+                                        MaterialTheme.colorScheme.surfaceVariant,
+                                        CircleShape
+                                    )
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            // Destination name
+                            Text(
+                                dashUi.destinationName.orEmpty().ifBlank { routeState.destination?.name.orEmpty() },
+                                color = TextHi,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = GeistFamily,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            // Stats row — prefer live dashUi values (updates every tick when streaming)
+                            // Falls back to the static route totals when not connected to dash.
+                            val liveDistText = dashUi.remainingKm?.let {
+                                if (it >= 10) "%.0f km".format(it) else "%.1f km".format(it)
+                            } ?: routeState.distanceText
+                            val liveDurText = dashUi.etaMinutes?.let { "${it} min" }
+                                ?: routeState.durationText
+                            val liveEtaText = dashUi.etaMinutes?.let {
+                                val cal = java.util.Calendar.getInstance()
+                                cal.add(java.util.Calendar.MINUTE, it)
+                                "%02d:%02d".format(cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE))
+                            } ?: routeState.etaText
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                liveDistText?.let { dist ->
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(OpenDashIcons.Road, null, tint = TextMid, modifier = Modifier.size(13.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(dist, color = TextHi, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
+                                    }
+                                }
+                                liveDurText?.let { dur ->
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(OpenDashIcons.Clock, null, tint = TextMid, modifier = Modifier.size(13.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(dur, color = Ok, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
+                                    }
+                                }
+                                liveEtaText?.let { eta ->
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(OpenDashIcons.Flag, null, tint = TextMid, modifier = Modifier.size(13.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("arrive $eta", color = TextMid, fontSize = 12.sp, fontFamily = GeistMonoFamily)
+                                    }
+                                }
+                            }
+
+                        }
+                    }
+                }
+            }
+
 
             // ── Right-edge floating controls: layers over recenter, above the sheet ──
             if (routeState.searchResults.isEmpty()) {
@@ -145,6 +365,7 @@ fun RouteScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
                         .padding(end = 16.dp, bottom = if (inRoutePreview) sheetHeight + 16.dp else 20.dp),
                 ) {
                     Surface(
@@ -183,8 +404,8 @@ fun RouteScreen(
                 }
             }
 
-            if (!inRoutePreview) {
-                // ── Explore top bar: Google-style search pill ──
+            if (!isActiveNavigation && (!inRoutePreview || searchingForStopIndex >= 0 || isSearchingDestination) && !routeState.isRecordingRoute && !routeState.isPreparingRouteRecording) {
+                // ── Explore top bar: back button + search pill ──
                 Column(
                     Modifier
                         .align(Alignment.TopCenter)
@@ -192,45 +413,123 @@ fun RouteScreen(
                         .statusBarsPadding()
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surface,
-                        shadowElevation = 4.dp,
-                        modifier = Modifier.fillMaxWidth(),
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Spacer(Modifier.width(16.dp))
-                            Icon(
-                                OpenDashIcons.Search, contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(21.dp),
-                            )
-                            androidx.compose.material3.TextField(
-                                value = routeState.searchQuery,
-                                onValueChange = { routeViewModel.onSearchQueryChange(it) },
-                                placeholder = {
-                                    Text(
-                                        if (routeState.isResolving) "Resolving Maps link…" else "Search here",
-                                        color = TextLo, fontSize = 15.sp, fontFamily = GeistFamily,
-                                    )
-                                },
-                                singleLine = true,
-                                trailingIcon = {
-                                    if (routeState.searchQuery.isNotEmpty()) {
-                                        Icon(
-                                            OpenDashIcons.X, contentDescription = "Clear", tint = TextMid,
-                                            modifier = Modifier.size(20.dp).clickable { routeViewModel.onSearchQueryChange("") },
-                                        )
+                        OpenDashIconBtn(
+                            OpenDashIcons.ChevronLeft,
+                            onClick = {
+                                if (isSearchingDestination) {
+                                    isSearchingDestination = false
+                                } else if (searchingForStopIndex >= 0) {
+                                    val currentStop = routeState.stops.getOrNull(searchingForStopIndex)
+                                    if (currentStop != null && currentStop.name.isBlank()) {
+                                        routeViewModel.removeStop(searchingForStopIndex)
                                     }
-                                },
-                                colors = searchFieldColors(),
-                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, fontFamily = GeistFamily),
-                                modifier = Modifier.weight(1f).height(52.dp),
-                            )
+                                    searchingForStopIndex = -1
+                                } else if (!isActiveNavigation) {
+                                    onBack()
+                                }
+                                // If isActiveNavigation: do nothing, nav stays active
+                            },
+                            size = 46.dp,
+                            modifier = Modifier.background(
+                                MaterialTheme.colorScheme.surface,
+                                CircleShape
+                            ),
+                        )
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surface,
+                            shadowElevation = 4.dp,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Spacer(Modifier.width(16.dp))
+                                Icon(
+                                    OpenDashIcons.Search, contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(21.dp),
+                                )
+                                androidx.compose.material3.TextField(
+                                    value = routeState.searchQuery,
+                                    onValueChange = { routeViewModel.onSearchQueryChange(it) },
+                                    placeholder = {
+                                        Text(
+                                            if (routeState.isResolving) "Resolving Maps link…" else "Search here",
+                                            color = TextLo, fontSize = 15.sp, fontFamily = GeistFamily,
+                                        )
+                                    },
+                                    singleLine = true,
+                                    trailingIcon = {
+                                        if (routeState.searchQuery.isNotEmpty()) {
+                                            Icon(
+                                                OpenDashIcons.X, contentDescription = "Clear", tint = TextMid,
+                                                modifier = Modifier.size(20.dp).clickable { routeViewModel.onSearchQueryChange("") },
+                                            )
+                                        }
+                                    },
+                                    colors = searchFieldColors(),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, fontFamily = GeistFamily),
+                                    modifier = Modifier.weight(1f).height(52.dp),
+                                )
+                            }
+                        }
+
+
+                    }
+                    // ── Saved destinations (non-trail) shown below search bar ──
+                    val displayedSaved = remember(savedList) {
+                        savedList.filter { loc ->
+                            !java.io.File(ctx.filesDir, "route_${loc.sid}.json").exists()
                         }
                     }
-                    SuggestionList(routeState.searchResults) { routeViewModel.chooseSearchResult(it) }
+                    if (displayedSaved.isNotEmpty() && routeState.searchQuery.isEmpty() && routeState.searchResults.isEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            shadowElevation = 4.dp,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.padding(vertical = 4.dp)) {
+                                displayedSaved.forEach { loc ->
+                                    PlaceRow(
+                                        icon = OpenDashIcons.LocationPin,
+                                        title = loc.name,
+                                        sub = loc.note.ifBlank { "%.4f, %.4f".format(loc.lat, loc.lng) },
+                                        onClick = {
+                                            if (isSearchingDestination || searchingForStopIndex >= 0) {
+                                                val place = com.example.opendash.data.Place(name = loc.name, address = loc.note, lat = loc.lat, lng = loc.lng)
+                                                if (isSearchingDestination) {
+                                                    routeViewModel.chooseSearchResult(place, stopIndex = -1)
+                                                    isSearchingDestination = false
+                                                } else {
+                                                    routeViewModel.chooseSearchResult(place, stopIndex = searchingForStopIndex)
+                                                    searchingForStopIndex = -1
+                                                }
+                                            } else {
+                                                routeViewModel.selectSaved(loc)
+                                            }
+                                        },
+                                        onEdit = { editing = loc },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    SuggestionList(routeState.searchResults) {
+                        if (isSearchingDestination) {
+                            routeViewModel.chooseSearchResult(it, stopIndex = -1)
+                            isSearchingDestination = false
+                        } else {
+                            routeViewModel.chooseSearchResult(it, stopIndex = searchingForStopIndex)
+                            searchingForStopIndex = -1
+                        }
+                    }
                 }
-            } else {
+            } else if (!isActiveNavigation && inRoutePreview) {
                 // ── Route preview top bar: back + from/to + travel mode ──
                 Column(
                     Modifier
@@ -239,12 +538,17 @@ fun RouteScreen(
                         .statusBarsPadding()
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.Top,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         OpenDashIconBtn(
                             OpenDashIcons.ChevronLeft,
                             onClick = { exitPreview() },
                             size = 46.dp,
-                            modifier = Modifier.background(Bg1.copy(alpha = 0.95f), CircleShape),
+                            modifier = Modifier
+                                .padding(top = 2.dp)
+                                .background(Bg1.copy(alpha = 0.95f), CircleShape),
                         )
                         Spacer(Modifier.width(10.dp))
                         Column(
@@ -254,37 +558,108 @@ fun RouteScreen(
                                 .background(Bg1.copy(alpha = 0.96f))
                                 .padding(horizontal = 14.dp, vertical = 10.dp),
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().clickable { exitPreview() }
+                            ) {
                                 Icon(OpenDashIcons.Cross, contentDescription = null, tint = Color(0xFF4285F4), modifier = Modifier.size(17.dp))
                                 Spacer(Modifier.width(10.dp))
                                 Text("Your location", color = TextHi, fontSize = 13.5.sp, fontFamily = GeistFamily)
                             }
-                            OpenDashDivider(Modifier.padding(vertical = 8.dp, horizontal = 2.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(OpenDashIcons.LocationPin, contentDescription = null, tint = Color(0xFFEA4335), modifier = Modifier.size(17.dp))
-                                Spacer(Modifier.width(10.dp))
-                                Text(
-                                    if (routeState.isResolving) "Resolving…" else destName,
-                                    color = TextHi, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold,
-                                    fontFamily = GeistFamily, maxLines = 1,
-                                )
+                            val waypoints = routeState.stops + listOfNotNull(dest)
+                            waypoints.forEachIndexed { idx, wp ->
+                                val isStop = idx < routeState.stops.size
+                                val displayTitle = if (wp.name.isBlank()) {
+                                    if (isStop) "Choose stop…" else "Choose destination…"
+                                } else wp.name
+                                val isDraggingThis = activeDragIdx == idx
+                                OpenDashDivider(Modifier.padding(vertical = 8.dp, horizontal = 2.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .offset {
+                                            if (isDraggingThis) IntOffset(0, dragOffsetY.roundToInt()) else IntOffset.Zero
+                                        }
+                                        .background(if (isDraggingThis) Bg1.copy(alpha = 0.8f) else Color.Transparent)
+                                ) {
+                                    Icon(
+                                        if (isStop) OpenDashIcons.Circle else OpenDashIcons.LocationPin,
+                                        contentDescription = null,
+                                        tint = if (isStop) TextLo else Color(0xFFEA4335),
+                                        modifier = Modifier.size(if (isStop) 14.dp else 17.dp).padding(horizontal = if (isStop) 1.5.dp else 0.dp)
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(
+                                        displayTitle,
+                                        color = TextHi, fontSize = 13.5.sp,
+                                        fontWeight = if (isStop) FontWeight.Normal else FontWeight.Bold,
+                                        fontFamily = GeistFamily,
+                                        modifier = Modifier.weight(1f).clickable {
+                                            if (isStop) {
+                                                searchingForStopIndex = idx
+                                                isSearchingDestination = false
+                                                routeViewModel.onSearchQueryChange(wp.name)
+                                            } else {
+                                                searchingForStopIndex = -1
+                                                isSearchingDestination = true
+                                                routeViewModel.onSearchQueryChange(if (wp.name == "Shared location" || wp.name == "Choose destination…") "" else wp.name)
+                                            }
+                                        },
+                                        maxLines = 1
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    if (waypoints.size >= 2) {
+                                        val dragThresholdPx = with(density) { 38.dp.toPx() }
+                                        Icon(
+                                            OpenDashIcons.Reorder,
+                                            contentDescription = "Drag to reorder",
+                                            tint = TextLo,
+                                            modifier = Modifier
+                                                .size(20.dp)
+                                                .pointerInput(idx, waypoints.size) {
+                                                    detectDragGestures(
+                                                        onDragStart = {
+                                                            dragOffsetY = 0f
+                                                            activeDragIdx = idx
+                                                        },
+                                                        onDragEnd = {
+                                                            activeDragIdx = -1
+                                                        },
+                                                        onDragCancel = {
+                                                            activeDragIdx = -1
+                                                        },
+                                                        onDrag = { change, dragAmount ->
+                                                            change.consume()
+                                                            if (activeDragIdx == idx) {
+                                                                dragOffsetY += dragAmount.y
+                                                                if (dragOffsetY > dragThresholdPx && idx < waypoints.size - 1) {
+                                                                    routeViewModel.moveWaypoint(idx, idx + 1)
+                                                                    activeDragIdx = idx + 1
+                                                                    dragOffsetY = 0f
+                                                                } else if (dragOffsetY < -dragThresholdPx && idx > 0) {
+                                                                    routeViewModel.moveWaypoint(idx, idx - 1)
+                                                                    activeDragIdx = idx - 1
+                                                                    dragOffsetY = 0f
+                                                                }
+                                                            }
+                                                        }
+                                                    )
+                                                }
+                                        )
+                                    }
+                                    if (isStop) {
+                                        Spacer(Modifier.width(12.dp))
+                                        Icon(
+                                            OpenDashIcons.X,
+                                            contentDescription = "Remove stop",
+                                            tint = TextLo,
+                                            modifier = Modifier.size(18.dp).clickable { routeViewModel.removeStop(idx) }
+                                        )
+                                    }
+                                }
                             }
                         }
-                    }
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(start = 56.dp, top = 8.dp),
-                    ) {
-                        TravelModeChip(
-                            mode = Router.TravelMode.CAR,
-                            selected = routeState.travelMode == Router.TravelMode.CAR,
-                            onClick = { routeViewModel.selectTravelMode(Router.TravelMode.CAR) },
-                        )
-                        TravelModeChip(
-                            mode = Router.TravelMode.BIKE,
-                            selected = routeState.travelMode == Router.TravelMode.BIKE,
-                            onClick = { routeViewModel.selectTravelMode(Router.TravelMode.BIKE) },
-                        )
                     }
                 }
 
@@ -299,7 +674,7 @@ fun RouteScreen(
                         .heightIn(max = 430.dp)
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 18.dp)
-                        .padding(top = 8.dp, bottom = 18.dp),
+                        .padding(top = 8.dp, bottom = 18.dp + navBarDp),
                 ) {
                     Box(
                         Modifier
@@ -309,20 +684,29 @@ fun RouteScreen(
                     )
                     Spacer(Modifier.height(12.dp))
 
+                    // Destination + Car/Bike icon toggles + save (icons only, on the right).
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                if (routeState.isResolving) "Resolving…" else destName,
-                                color = TextHi, fontSize = 18.sp, fontWeight = FontWeight.Bold,
-                                fontFamily = GeistFamily, letterSpacing = (-0.36).sp, maxLines = 1,
-                            )
-                            if (destSub.isNotBlank()) {
-                                Text(destSub, color = TextLo, fontSize = 12.sp, fontFamily = GeistMonoFamily, modifier = Modifier.padding(top = 2.dp))
-                            }
-                        }
+                        Text(
+                            if (routeState.isResolving) "Resolving…" else destName,
+                            color = TextHi, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                            fontFamily = GeistFamily, letterSpacing = (-0.36).sp, maxLines = 1,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TravelModeIcon(
+                            OpenDashIcons.Car,
+                            selected = routeState.travelMode == Router.TravelMode.CAR,
+                            onClick = { routeViewModel.selectTravelMode(Router.TravelMode.CAR) },
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        TravelModeIcon(
+                            OpenDashIcons.Motor,
+                            selected = routeState.travelMode == Router.TravelMode.BIKE,
+                            onClick = { routeViewModel.selectTravelMode(Router.TravelMode.BIKE) },
+                        )
                         if (canStart) {
+                            Spacer(Modifier.width(6.dp))
                             OpenDashIconBtn(
-                                OpenDashIcons.Pin,
+                                OpenDashIcons.Save,
                                 onClick = { showSave = true },
                                 size = 40.dp,
                                 modifier = Modifier.background(Surf1, CircleShape),
@@ -332,7 +716,7 @@ fun RouteScreen(
 
                     Spacer(Modifier.height(10.dp))
 
-                    // Google-style headline: green duration, then distance · ETA
+                    // Headline: green duration, then distance · ETA
                     Row(verticalAlignment = Alignment.Bottom) {
                         Text(
                             when {
@@ -353,99 +737,222 @@ fun RouteScreen(
                             modifier = Modifier.padding(bottom = 4.dp),
                         )
                     }
-
-                    // Route alternatives — tap to switch, like Google's "via …" rows.
                     if (routeState.routes.size > 1) {
-                        Spacer(Modifier.height(10.dp))
-                        routeState.routes.forEachIndexed { i, r ->
-                            val selected = i == routeState.selectedRouteIndex
-                            val mins = (r.totalSeconds / 60).toInt()
-                            val dur = if (mins >= 60) "${mins / 60}h ${mins % 60}m" else "${mins}m"
-                            val km = "%.0f km".format(r.totalMeters / 1000.0)
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(if (selected) GoldTint2 else Color.Transparent)
-                                    .clickable { routeViewModel.selectRoute(i) }
-                                    .padding(horizontal = 10.dp, vertical = 10.dp),
-                            ) {
-                                Box(
-                                    Modifier.size(9.dp).clip(CircleShape)
-                                        .background(if (selected) Gold else Line3)
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Text(
-                                    if (i == 0) "Fastest route" else "Alternative $i",
-                                    color = if (selected) TextHi else TextMid,
-                                    fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Text(
-                                    "$dur · $km",
-                                    color = if (selected) Gold else TextLo,
-                                    fontSize = 12.5.sp, fontFamily = GeistMonoFamily,
-                                )
-                            }
-                        }
+                        Text(
+                            "Tap a route on the map to compare",
+                            color = TextLo, fontSize = 12.sp, fontFamily = GeistFamily,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
                     }
 
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(16.dp))
 
-                    // Start + voice mode (tap the pill to cycle Off → Chime → Full TTS)
+                    // Start (fills width) + compact Voice icon.
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OpenDashBtn(
                             label = when {
-                                sent                   -> "Starting navigation…"
-                                routeState.isResolving -> "Resolving destination…"
+                                sent                   -> "Starting…"
+                                routeState.isResolving -> "Resolving…"
                                 routeState.routing     -> "Finding route…"
                                 else                   -> "Start"
                             },
-                            onClick = { sent = true },
+                            onClick = { routeViewModel.startNavigation(); sent = true },
                             icon = if (sent) OpenDashIcons.Check else OpenDashIcons.Navi,
                             variant = if (sent) BtnVariant.Secondary else BtnVariant.Primary,
-                            size = BtnSize.Lg,
+                            size = BtnSize.Md,
                             enabled = !sent && canStart,
                             modifier = Modifier.weight(1f),
                         )
+                        if (canStart) {
+                            Spacer(Modifier.width(8.dp))
+                            OpenDashBtn(
+                                label = "Add stops",
+                                onClick = {
+                                    routeViewModel.addBlankStop()
+                                    searchingForStopIndex = routeState.stops.size
+                                    routeViewModel.onSearchQueryChange("")
+                                },
+                                icon = OpenDashIcons.Plus,
+                                variant = BtnVariant.Secondary,
+                                size = BtnSize.Md,
+                            )
+                        }
                         Spacer(Modifier.width(10.dp))
                         val nextVoice = when (voiceMode) {
                             VoiceMode.OFF   -> VoiceMode.CHIME
                             VoiceMode.CHIME -> VoiceMode.FULL
                             VoiceMode.FULL  -> VoiceMode.OFF
                         }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
+                        Box(
+                            contentAlignment = Alignment.Center,
                             modifier = Modifier
+                                .size(50.dp)
                                 .clip(CircleShape)
-                                .background(Surf1)
-                                .border(1.dp, if (voiceMode == VoiceMode.OFF) Line else Gold, CircleShape)
-                                .clickable { voiceManager.setMode(nextVoice) }
-                                .padding(horizontal = 16.dp, vertical = 15.dp),
+                                .background(if (voiceMode == VoiceMode.OFF) Surf1 else GoldTint)
+                                .clickable { voiceManager.setMode(nextVoice) },
                         ) {
                             Icon(
                                 if (voiceMode == VoiceMode.OFF) OpenDashIcons.SpeakerOff else OpenDashIcons.Speaker,
-                                contentDescription = "Voice guidance",
-                                tint = when (voiceMode) {
-                                    VoiceMode.OFF   -> TextLo
-                                    VoiceMode.CHIME -> TextMid
-                                    VoiceMode.FULL  -> Gold
-                                },
-                                modifier = Modifier.size(20.dp),
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                when (voiceMode) {
-                                    VoiceMode.OFF   -> "Off"
-                                    VoiceMode.CHIME -> "Chime"
-                                    VoiceMode.FULL  -> "Voice"
-                                },
-                                color = if (voiceMode == VoiceMode.OFF) TextLo else Gold,
-                                fontSize = 12.5.sp, fontFamily = GeistMonoFamily,
+                                contentDescription = "Voice: ${voiceMode.name.lowercase()}",
+                                tint = if (voiceMode == VoiceMode.OFF) TextMid else Gold,
+                                modifier = Modifier.size(22.dp),
                             )
                         }
                     }
+                }
+            }
+
+            if (routeState.isRecordingRoute) {
+                // Recording banner at the top
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.95f),
+                    shadowElevation = 6.dp,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(horizontal = 14.dp, vertical = 14.dp)
+                        .fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFE5341F))
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "Recording Trail...",
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = GeistFamily
+                            )
+                        }
+                        
+                        val distanceMeters = remember(routeState.recordedPoints) {
+                            if (routeState.recordedPoints.size < 2) 0.0
+                            else {
+                                var total = 0.0
+                                for (i in 1 until routeState.recordedPoints.size) {
+                                    val p1 = routeState.recordedPoints[i - 1]
+                                    val p2 = routeState.recordedPoints[i]
+                                    val res = FloatArray(1)
+                                    android.location.Location.distanceBetween(p1.lat, p1.lng, p2.lat, p2.lng, res)
+                                    total += res[0]
+                                }
+                                total
+                            }
+                        }
+                        Text(
+                            "%.2f km".format(distanceMeters / 1000.0),
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = GeistFamily
+                        )
+                    }
+                }
+                
+                OpenDashBtn(
+                    label = "Stop & Save",
+                    onClick = {
+                        routeViewModel.stopRecordingRoute()
+                        if (routeState.recordedPoints.size >= 2) {
+                            routeViewModel.saveRecordedRoute(routeState.recordingTrailName)
+                        } else {
+                            routeViewModel.clear()
+                        }
+                    },
+                    icon = OpenDashIcons.X,
+                    variant = BtnVariant.Primary,
+                    size = BtnSize.Md,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(bottom = 24.dp)
+                        .width(180.dp)
+                )
+            }
+
+            if (routeState.isPreparingRouteRecording) {
+                // Back button at the top left
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .statusBarsPadding()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    OpenDashIconBtn(
+                        OpenDashIcons.ChevronLeft,
+                        onClick = { routeViewModel.clear() },
+                        size = 46.dp,
+                        modifier = Modifier.background(
+                            MaterialTheme.colorScheme.surface,
+                            CircleShape
+                        ),
+                    )
+                }
+
+                // Pre-recording configuration bottom card
+                var customTrailName by remember {
+                    mutableStateOf("Trail_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date()))
+                }
+
+                Column(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .onGloballyPositioned { sheetHeight = with(density) { it.size.height.toDp() } }
+                        .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                        .background(Bg1)
+                        .imePadding()
+                        .padding(horizontal = 18.dp)
+                        .padding(top = 16.dp, bottom = 24.dp + navBarDp),
+                ) {
+                    Box(
+                        Modifier
+                            .width(36.dp).height(4.dp)
+                            .clip(CircleShape).background(Line3)
+                            .align(Alignment.CenterHorizontally)
+                    )
+                    Spacer(Modifier.height(18.dp))
+
+                    androidx.compose.material3.OutlinedTextField(
+                        value = customTrailName,
+                        onValueChange = { customTrailName = it },
+                        label = { Text("Trail name") },
+                        singleLine = true,
+                        placeholder = { Text("e.g. Secret mountain shortcut") },
+                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextHi,
+                            unfocusedTextColor = TextHi,
+                            focusedBorderColor = Gold,
+                            unfocusedBorderColor = Line3,
+                            focusedLabelColor = Gold,
+                            unfocusedLabelColor = TextLo
+                        ),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, fontFamily = GeistFamily),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    
+                    Spacer(Modifier.height(20.dp))
+                    
+                    OpenDashBtn(
+                        label = "Start Recording",
+                        onClick = { routeViewModel.startRecordingRoute(customTrailName) },
+                        icon = OpenDashIcons.Target,
+                        variant = BtnVariant.Primary,
+                        size = BtnSize.Md,
+                        enabled = customTrailName.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }
@@ -467,6 +974,7 @@ fun RouteScreen(
 }
 
 /** Google-style place list row: round tonal icon, name, address. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PlaceRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -479,7 +987,15 @@ private fun PlaceRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .then(
+                if (onEdit != null)
+                    Modifier.combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onEdit,
+                    )
+                else
+                    Modifier.clickable(onClick = onClick)
+            )
             .padding(horizontal = 16.dp, vertical = 11.dp),
     ) {
         Box(
@@ -497,12 +1013,6 @@ private fun PlaceRow(
             if (sub.isNotBlank()) {
                 Text(sub, color = TextLo, fontSize = 12.5.sp, fontFamily = GeistFamily, maxLines = 1, modifier = Modifier.padding(top = 1.dp))
             }
-        }
-        if (onEdit != null) {
-            Icon(
-                OpenDashIcons.Edit, contentDescription = "Edit", tint = TextLo,
-                modifier = Modifier.size(18.dp).clickable(onClick = onEdit),
-            )
         }
     }
 }
@@ -552,38 +1062,34 @@ private fun searchFieldColors() = androidx.compose.material3.TextFieldDefaults.c
     unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
 )
 
+/** Icon-only travel mode toggle (Car / Bike) for the destination header row. */
 @Composable
-private fun TravelModeChip(
-    mode: Router.TravelMode,
+private fun TravelModeIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     selected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
 ) {
-    Row(
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier
-            .height(38.dp)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(40.dp)
             .clip(CircleShape)
-            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Bg1.copy(alpha = 0.94f))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp),
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Surf1)
+            .clickable(onClick = onClick),
     ) {
         Icon(
-            if (mode == Router.TravelMode.CAR) OpenDashIcons.Car else OpenDashIcons.Motor,
-            contentDescription = mode.label,
+            icon,
+            contentDescription = null,
             tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else TextMid,
-            modifier = Modifier.size(19.dp),
-        )
-        Spacer(Modifier.width(7.dp))
-        Text(
-            mode.label,
-            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else TextMid,
-            fontSize = 12.5.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            fontFamily = GeistFamily,
+            modifier = Modifier.size(20.dp),
         )
     }
+}
+
+/** Short duration label for map bubbles, e.g. "11 min" / "1 h 5 m". */
+private fun routeDurationShort(totalSeconds: Double): String {
+    val mins = (totalSeconds / 60).toInt()
+    return if (mins >= 60) "${mins / 60} h ${mins % 60} m" else "$mins min"
 }
 
 @Composable
@@ -606,7 +1112,7 @@ private fun SaveLocationDialog(defaultName: String, onSave: (String, String) -> 
 }
 
 @Composable
-private fun EditLocationDialog(loc: com.example.opendash.data.SavedLocation, onSave: (String, String) -> Unit, onDelete: () -> Unit, onDismiss: () -> Unit) {
+internal fun EditLocationDialog(loc: com.example.opendash.data.SavedLocation, onSave: (String, String) -> Unit, onDelete: () -> Unit, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf(loc.name) }
     var note by remember { mutableStateOf(loc.note) }
     androidx.compose.material3.AlertDialog(
@@ -618,6 +1124,40 @@ private fun EditLocationDialog(loc: com.example.opendash.data.SavedLocation, onS
             Column {
                 androidx.compose.material3.OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 androidx.compose.material3.OutlinedTextField(note, { note = it }, label = { Text("Note") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            }
+        },
+        containerColor = Surf1,
+    )
+}
+
+@Composable
+private fun SaveTrailDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            androidx.compose.material3.TextButton(enabled = name.isNotBlank(), onClick = { onSave(name.trim()) }) {
+                Text("Save", color = if (name.isNotBlank()) Gold else TextLo)
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMid)
+            }
+        },
+        title = { Text("Save custom trail", color = TextHi) },
+        text = {
+            Column {
+                Text("Enter a name for this recorded trail route:", color = TextMid, fontSize = 14.sp)
+                Spacer(Modifier.height(8.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Trail name") },
+                    singleLine = true,
+                    placeholder = { Text("e.g. Secret mountain shortcut") },
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         },
         containerColor = Surf1,

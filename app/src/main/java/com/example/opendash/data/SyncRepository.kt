@@ -130,9 +130,11 @@ class SyncRepository private constructor(context: Context) {
     }
     fun deleteMaintenance(m: MaintenanceItem) { db.deleteMaintenanceBySid(m.sid); userDoc()?.collection("maintenance")?.document(m.sid)?.delete(); bump() }
 
-    fun addSaved(name: String, lat: Double, lng: Double, note: String) {
-        val s = SavedLocation(sid = OpenDashDb.newSid(), name = name, lat = lat, lng = lng, note = note)
+    fun addSaved(name: String, lat: Double, lng: Double, note: String): String {
+        val sid = OpenDashDb.newSid()
+        val s = SavedLocation(sid = sid, name = name, lat = lat, lng = lng, note = note)
         db.upsertSaved(s); pushSaved(s); bump()
+        return sid
     }
     fun renameSaved(s: SavedLocation, name: String, note: String) {
         val u = s.copy(name = name, note = note); db.upsertSaved(u); pushSaved(u); bump()

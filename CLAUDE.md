@@ -1,9 +1,10 @@
     # OpenDash
 
-Personal Android companion app for a **Royal Enfield Himalayan 450** motorcycle.
-Single user (just me), Android-only, targeting a **Nothing Phone 3**. Not a
-product to sell — may be open-sourced, but built for my own bike only. No user
-personas, no client/enterprise concerns.
+Personal Android companion app for **Royal Enfield bikes with the new-generation
+TFT cluster** (450 platform: Himalayan 450, Guerrilla 450). Single user (just me),
+Android-only, targeting a **Nothing Phone 3**. Not a product to sell — may be
+open-sourced, but built around my own bike (a Himalayan 450). No user personas,
+no client/enterprise concerns.
 
 ## Primary goal
 
@@ -37,9 +38,19 @@ difference is the whole point of the project.
 - **Language:** Kotlin (Android, native).
 - **Map rendering:** off-screen render → `MediaCodec` hardware H.264 encode →
   `MediaCodec`/RTP to the dash on UDP/5000.
-- **Maps/offline:** offline maps preferred for riding; reuse cached/offline Google
-  Maps if feasible, otherwise an OSM stack (MapLibre) as fallback. Decide during
-  build — don't over-engineer the map layer up front.
+- **Maps (decided, built):** MapLibre with the OpenFreeMap "liberty" style
+  (`ui/components/OpenDashMap.kt`). Offline map areas download via MapLibre's
+  `OfflineManager` (`data/OfflineMaps.kt` + `OfflineMapsScreen`) — pick an area,
+  its tile pyramid (zoom 6–16) is stored on-device and served with no network.
+- **Routing:** `dash/nav/Router.kt` — Google Routes API (`computeRoutes`, real
+  `TWO_WHEELER` profile) when `GOOGLE_MAPS_API_KEY` is set; Mapbox Directions as
+  fallback (car profile + `exclude=motorway` approximates a bike). Both decode to
+  the same `Route` model (geometry + maneuvers), so callers don't care which
+  provider answered. Travel modes: Car / Bike. Routes are fetched at planning time
+  while online and cached, so riding can proceed offline. Supports alternatives
+  and waypoint stops (stops are Mapbox-only for now).
+- **Place search:** `data/PlaceSearch.kt` — Google Places (New) first, Mapbox
+  Search Box second, on-device Android Geocoder as the fallback.
 - **Backend:** **Firebase** for email auth + multi-device sync (so installing on a
   second device restores my data). Single user, but sync is wanted.
 - **Local persistence:** on-device **SQLite** as the source of truth; Firebase
@@ -76,8 +87,10 @@ is isolated:
 ## Hard constraints / non-goals
 
 - **Android only.** No iOS.
-- **One bike** (Himalayan 450), **one dash target** (RE Tripper). No generic
-  multi-bike / multi-dash abstraction.
+- **One dash target**: the **Tripper Dash** — RE's name for the round TFT
+  instrument cluster on the 450 platform (Himalayan 450, Guerrilla 450). No
+  generic multi-brand / multi-dash abstraction — bikes with the older
+  "Tripper" navigation pod (350s etc.) are out of scope.
 - No personas, no branding-as-product, no team/lab infrastructure, no server-side
   PostGIS unless a real need appears. Keep it lean.
 - The dash-streaming core requires **hardware-in-the-loop validation on my bike** —
@@ -87,3 +100,38 @@ is isolated:
 
 - `@docs/HLD-LLD.md` — full architecture (high- and low-level design).
 - `@docs/design/` — UI prototype and screen specs (from Claude Design).
+
+## Recent Feature Updates & UI Polish
+
+- **Floating Glassmorphic Bottom Navigation Bar**:
+  - Redesigned as a floating, semi-transparent, circular dock with `CircleShape` corners and a semi-transparent background (copying the Telegram UI style).
+  - Fully transparent system navigation bar integration via custom `enableEdgeToEdge()` in `MainActivity.kt`.
+  - Smooth vertical gradient fade overlay (`110.dp` height) behind the dock to fade out scrollable screen content seamlessly.
+  - Standardized bottom padding across scrollable screens (`HomeScreen`, `SettingsScreen`, `TrailsScreen`, `GarageScreen`, `RidesScreen`, `DashScreen`) to `100.dp`.
+- **Material Design Icon Library Integration**:
+  - Replaced all custom hand-drawn SVG vectors in `OpenDashIcons.kt` with official high-quality, pixel-perfect Material Design Icons from `androidx.compose.material:material-icons-extended` (e.g., Turn arrows, bike types, dashboard, chain/link).
+- **Now Playing & Caller Cards**:
+  - Exposed active media (`nowPlaying`) and incoming/active calls (`incomingCall`) streams from `DashViewModel`.
+  - Added new clean card UI components `NowPlayingCard` and `CallerCard` inside `MediaCards.kt`.
+  - Configured Now Playing card on the Home Screen to dynamically show only when active navigation is running, regardless of whether the phone is connected to the bike.
+- **Offline maps**: `OfflineMapsScreen` + `data/OfflineMaps.kt` — download named
+  map areas for no-network riding (see Tech stack).
+- **Custom trails**: `TrailsScreen` (own bottom tab) — record a GPS trail while
+  riding, save it as a reusable route, navigate it later. The tab can be hidden
+  via the `NavSettings.customTrailsEnabled` toggle in Settings.
+- **Travel modes + route alternatives**: Car / Bike mode picker on the Route
+  screen (`Router.TravelMode`); routing returns a primary route plus
+  alternatives, with waypoint stops supported.
+- **Nav settings**: `data/NavSettings.kt` — live-traffic refresh toggle (off by
+  default until a billed API key is ready) and the custom-trails toggle.
+- **Multi-vehicle garage**: `VehicleStore` profiles (PUC / insurance / service),
+  per-vehicle fuel & expense records (`vehicle_id` columns), and bundled default
+  bike images (`res/drawable/default_*.jpg`) for common Indian-market bikes.
+- **Bottom tabs**: Home · Navigate · Trails · Expenses · Garage · More
+  (Settings); Dash and Rides are Home children. Bar hides on the Route tab so
+  horizontal drags pan the map.
+- **350 Tripper pod (exploratory)**: `docs/tripper-350-ble-capture.md` — BLE/HCI
+  capture plan to reverse-engineer the older 350 navigation pod's GATT protocol.
+  A side track needing borrowed hardware; the Tripper Dash (450) remains the core
+  target.
+

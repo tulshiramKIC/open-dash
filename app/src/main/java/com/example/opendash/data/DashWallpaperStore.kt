@@ -52,6 +52,10 @@ data class DashWallpaperInfo(
 class DashWallpaperStore(private val context: Context) {
     private val prefs = context.getSharedPreferences("dash_wallpaper", Context.MODE_PRIVATE)
 
+    var slideshowIntervalSec: Int
+        get() = prefs.getInt("slideshow_interval_sec", 0)
+        set(value) = prefs.edit().putInt("slideshow_interval_sec", value).apply()
+
     val wallpaperFile: File
         get() = DashWallpaperPaths.fileIn(context.filesDir)
 

@@ -2,6 +2,7 @@ package com.example.opendash.data
 
 import com.example.opendash.BuildConfig
 import com.example.opendash.util.DebugLog
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -39,16 +40,27 @@ object PlaceSearch {
     private const val G_AUTOCOMPLETE = "https://places.googleapis.com/v1/places:autocomplete"
     private const val G_PLACE = "https://places.googleapis.com/v1/places"
 
-    /** Autocomplete suggestions near an optional proximity point. Empty on error / no keys. */
+    /** Autocomplete suggestions near an optional proximity point. Empty on error / no keys.
+     *  [context] is optional — when provided, a local SQLite offline cache is checked as a
+     *  fallback so search works with no internet after a region has been downloaded.
+     */
     suspend fun suggest(
         query: String, proxLat: Double?, proxLng: Double?, sessionToken: String,
+        context: Context? = null,
     ): List<Place> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptyList()
         if (BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank()) {
             val google = googleSuggest(query, proxLat, proxLng, sessionToken)
             if (google.isNotEmpty()) return@withContext google
         }
-        mapboxSuggest(query, proxLat, proxLng, sessionToken)
+        val mapbox = mapboxSuggest(query, proxLat, proxLng, sessionToken)
+        if (mapbox.isNotEmpty()) return@withContext mapbox
+        // Offline fallback: local SQLite index built at region-download time.
+        if (context != null) {
+            val offline = suggestOffline(query, context)
+            if (offline.isNotEmpty()) return@withContext offline
+        }
+        emptyList()
     }
 
     /** Resolve a picked suggestion to coordinates. Null on error. */
@@ -164,6 +176,27 @@ object PlaceSearch {
                 null
             }
         }
+
+    // ── Offline SQLite fallback ────────────────────────────────────────────
+
+    /**
+     * Query the local [offline_place] table that was indexed when the user downloaded a
+     * map region. Results carry coordinates directly, so [resolve] needs no network call.
+     */
+    private fun suggestOffline(query: String, context: Context): List<Place> = try {
+        val db = OpenDashDb.get(context)
+        db.searchOfflinePlaces(query).map { p ->
+            Place(
+                name    = p.name,
+                address = if (p.address.isNotBlank()) p.address else p.region,
+                lat     = p.lat,
+                lng     = p.lng,
+            )
+        }
+    } catch (e: Exception) {
+        DebugLog.w(TAG) { "offline suggest failed: ${e.message}" }
+        emptyList()
+    }
 
     // ── HTTP helpers ───────────────────────────────────────────────────────
 

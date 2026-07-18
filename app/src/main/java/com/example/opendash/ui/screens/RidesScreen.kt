@@ -45,7 +45,7 @@ fun RidesScreen(ridesViewModel: RidesViewModel = viewModel()) {
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(18.dp)
-            .padding(bottom = 24.dp),
+            .padding(bottom = 100.dp),
     ) {
         ScreenHeader(title = "Ride history")
 
@@ -55,7 +55,27 @@ fun RidesScreen(ridesViewModel: RidesViewModel = viewModel()) {
             RideTotals(rides)
             Spacer(Modifier.height(14.dp))
             rides.forEach { ride ->
-                RideCard(ride, onDelete = { ridesViewModel.deleteRide(ride) })
+                val context = androidx.compose.ui.platform.LocalContext.current
+                RideCard(
+                    ride = ride,
+                    onExport = {
+                        val track = if (ride.trackPolyline.isBlank()) emptyList()
+                                    else PolylineCodec.decode(ride.trackPolyline)
+                        if (track.isNotEmpty()) {
+                            val r = com.example.opendash.dash.nav.Route(
+                                geometry = track,
+                                maneuvers = emptyList(),
+                                totalMeters = ride.distanceKm * 1000.0,
+                                totalSeconds = ride.durationSec.toDouble(),
+                                cumulative = DoubleArray(track.size)
+                            )
+                            val sdf = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault())
+                            val dateStr = sdf.format(Date(ride.startMs))
+                            ridesViewModel.exportGpx(context, r, "Ride_$dateStr")
+                        }
+                    },
+                    onDelete = { ridesViewModel.deleteRide(ride) }
+                )
                 Spacer(Modifier.height(12.dp))
             }
         }
@@ -84,7 +104,7 @@ private fun Stat(value: String, label: String) {
 }
 
 @Composable
-private fun RideCard(ride: Ride, onDelete: () -> Unit) {
+private fun RideCard(ride: Ride, onExport: () -> Unit, onDelete: () -> Unit) {
     val track = remember(ride.trackPolyline) {
         if (ride.trackPolyline.isBlank()) emptyList()
         else PolylineCodec.decode(ride.trackPolyline)
@@ -111,16 +131,27 @@ private fun RideCard(ride: Ride, onDelete: () -> Unit) {
                 Text("%.1f km".format(ride.distanceKm), color = Gold, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = GeistFamily)
             }
             Spacer(Modifier.height(12.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                MiniStat(fmtDuration(ride.durationSec), "duration")
-                MiniStat("%.0f km/h".format(ride.avgSpeedKmh), "avg")
-                MiniStat("%.0f km/h".format(ride.maxSpeedKmh), "max")
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.size(34.dp).clip(CircleShape).background(Surf2)
-                        .clickable { onDelete() },
-                ) {
-                    Icon(OpenDashIcons.X, contentDescription = "Delete ride", tint = TextLo, modifier = Modifier.size(16.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    MiniStat(fmtDuration(ride.durationSec), "duration")
+                    MiniStat("%.0f km/h".format(ride.avgSpeedKmh), "avg")
+                    MiniStat("%.0f km/h".format(ride.maxSpeedKmh), "max")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(34.dp).clip(CircleShape).background(Surf2)
+                            .clickable { onExport() },
+                    ) {
+                        Icon(OpenDashIcons.Share, contentDescription = "Export GPX", tint = TextLo, modifier = Modifier.size(16.dp))
+                    }
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(34.dp).clip(CircleShape).background(Surf2)
+                            .clickable { onDelete() },
+                    ) {
+                        Icon(OpenDashIcons.X, contentDescription = "Delete ride", tint = TextLo, modifier = Modifier.size(16.dp))
+                    }
                 }
             }
         }

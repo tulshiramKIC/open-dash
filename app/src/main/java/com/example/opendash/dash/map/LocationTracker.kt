@@ -41,8 +41,13 @@ class LocationTracker(context: Context) {
             rejectStreak = 0
             return true
         }
-        val isGps = loc.provider == LocationManager.GPS_PROVIDER
-        if (!isGps && cur.provider == LocationManager.GPS_PROVIDER &&
+        // If the new fix is significantly more accurate than the current one, always accept it
+        if (loc.hasAccuracy() && cur.hasAccuracy() && loc.accuracy < cur.accuracy - 10f) {
+            rejectStreak = 0
+            return true
+        }
+        val isGps = loc.provider == LocationManager.GPS_PROVIDER || loc.provider == "fused"
+        if (!isGps && (cur.provider == LocationManager.GPS_PROVIDER || cur.provider == "fused") &&
             loc.time - cur.time < GPS_STALE_MS
         ) return false
         if (loc.time < cur.time) return false
@@ -93,13 +98,27 @@ class LocationTracker(context: Context) {
             return
         }
 
-        lastKnownFrom(LocationManager.GPS_PROVIDER)
-            ?.let { _location.value = it }
-            ?: lastKnownFrom(LocationManager.NETWORK_PROVIDER)?.let { _location.value = it }
+        val providers = mutableListOf<String>()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            providers.add("fused")
+        }
+        providers.add(LocationManager.GPS_PROVIDER)
+        providers.add(LocationManager.NETWORK_PROVIDER)
+
+        // Try to initialize with last known location from best available provider
+        var lastKnownLoc: Location? = null
+        for (provider in providers) {
+            lastKnownLoc = lastKnownFrom(provider)
+            if (lastKnownLoc != null) break
+        }
+        if (lastKnownLoc != null) {
+            _location.value = lastKnownLoc
+        }
 
         var registered = false
-        for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+        for (provider in providers) {
             if (provider == LocationManager.GPS_PROVIDER && !hasFineLocationPermission()) continue
+            if (provider == "fused" && !hasFineLocationPermission()) continue
             runCatching {
                 if (lm.isProviderEnabled(provider)) {
                     lm.requestLocationUpdates(provider, 500L, 0f, listener, Looper.getMainLooper())
@@ -122,9 +141,14 @@ class LocationTracker(context: Context) {
 
     /** Best last-known fix without starting updates (for routing before connecting). */
     @SuppressLint("MissingPermission")
-    fun lastKnown(): Location? =
-        _location.value
-            ?: lastKnownFrom(LocationManager.GPS_PROVIDER)
+    fun lastKnown(): Location? {
+        val valLoc = _location.value
+        if (valLoc != null) return valLoc
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            lastKnownFrom("fused")?.let { return it }
+        }
+        return lastKnownFrom(LocationManager.GPS_PROVIDER)
             ?: lastKnownFrom(LocationManager.NETWORK_PROVIDER)
             ?: lastKnownFrom(LocationManager.PASSIVE_PROVIDER)
+    }
 }

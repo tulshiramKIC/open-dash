@@ -22,6 +22,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.example.opendash.R
+import androidx.compose.ui.graphics.asImageBitmap
+import android.graphics.BitmapFactory
+import androidx.compose.ui.layout.ContentScale
+import com.example.opendash.data.VehicleStore
 import com.example.opendash.ui.OpenDashIcons
 import com.example.opendash.ui.components.*
 import com.example.opendash.ui.theme.*
@@ -43,9 +50,16 @@ fun HomeScreen(
     ridesViewModel: RidesViewModel = viewModel(),
     garageViewModel: GarageViewModel = viewModel(),
 ) {
-    val saved by routeViewModel.saved.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val savedAll by routeViewModel.saved.collectAsState()
+    // Exclude custom trail entries (those with a recorded route JSON on disk)
+    val saved = remember(savedAll) {
+        savedAll.filter { loc -> !java.io.File(context.filesDir, "route_${loc.sid}.json").exists() }
+    }
     val rides by ridesViewModel.rides.collectAsState()
     val garage by garageViewModel.ui.collectAsState()
+    val routeState by routeViewModel.state.collectAsState()
+    var editingLoc by remember { mutableStateOf<com.example.opendash.data.SavedLocation?>(null) }
 
     val (statusText, statusColor) = when (conn) {
         ConnectionState.Connected -> "Streaming to dash" to Ok
@@ -63,19 +77,38 @@ fun HomeScreen(
     val lastRide = rides.firstOrNull()
     val nextService = garage.maint.minByOrNull { it.remainingKm }
 
+    val dashViewModel: com.example.opendash.viewmodel.DashViewModel = viewModel()
+    val dashUi by dashViewModel.ui.collectAsState()
+    val nowPlaying by dashViewModel.nowPlaying.collectAsState()
+    val incomingCall by dashViewModel.incomingCall.collectAsState()
+    val isNavigating = routeState.navigating
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
-            .padding(top = 8.dp, bottom = 28.dp),
+            .padding(top = 8.dp, bottom = 100.dp),
     ) {
-        ScreenHeader(
-            wordmark = true,
-            trailing = {
-                OpenDashIconBtn(OpenDashIcons.Gear, onClick = { onNavigate("settings") }, size = 42.dp)
-            },
-        )
+        val call = incomingCall
+        if (call != null) {
+            CallerCard(
+                call = call,
+                onAnswer = { dashViewModel.answerCall(call) },
+                onDecline = { dashViewModel.endCall(call) }
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+        val vehicles by VehicleStore.vehicles.collectAsState()
+        val activeVehicleId by VehicleStore.activeVehicleId.collectAsState()
+        val activeVehicle = remember(vehicles, activeVehicleId) {
+            VehicleStore.activeVehicle()
+        }
+        val profileImg = remember(activeVehicle.profileIcon) {
+            if (activeVehicle.profileIcon != "default") {
+                runCatching { BitmapFactory.decodeFile(activeVehicle.profileIcon)?.asImageBitmap() }.getOrNull()
+            } else null
+        }
 
         // ── Status header: bike + dash state + primary actions ──
         OpenDashCard(
@@ -84,9 +117,21 @@ fun HomeScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                val (brand, model) = remember(activeVehicle.title) { getBrandAndModel(activeVehicle.title) }
                 Column(Modifier.weight(1f)) {
+                    if (brand.isNotEmpty()) {
+                        Text(
+                            brand.uppercase(),
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = GeistFamily,
+                            letterSpacing = 1.sp,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                    }
                     Text(
-                        garage.activeVehicleName,
+                        model.ifBlank { activeVehicle.title },
                         color = MaterialTheme.colorScheme.onSurface,
                         fontSize = 21.sp,
                         fontWeight = FontWeight.Bold,
@@ -95,23 +140,26 @@ fun HomeScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Spacer(Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            Modifier.size(8.dp).clip(CircleShape).background(
-                                statusColor.copy(alpha = if (conn == ConnectionState.Connected) pulseAlpha else 1f)
+                    if (conn != ConnectionState.Offline) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier.size(8.dp).clip(CircleShape).background(
+                                    statusColor.copy(alpha = if (conn == ConnectionState.Connected) pulseAlpha else 1f)
+                                )
                             )
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            statusText,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 13.5.sp,
-                            fontFamily = GeistFamily,
-                        )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                statusText,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.5.sp,
+                                fontFamily = GeistFamily,
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.width(12.dp))
+                val defaultDrawable = remember(activeVehicle.title) { getBikeDefaultDrawable(activeVehicle.title) }
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
@@ -119,18 +167,56 @@ fun HomeScreen(
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primaryContainer),
                 ) {
-                    Icon(
-                        OpenDashIcons.Motor, contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(24.dp),
-                    )
+                    if (profileImg != null) {
+                        Image(
+                            bitmap = profileImg,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Image(
+                            painter = painterResource(id = defaultDrawable),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                val context = androidx.compose.ui.platform.LocalContext.current
                 OpenDashBtn(
                     label = if (conn == ConnectionState.Connected) "Dash view" else "Connect dash",
                     icon = if (conn == ConnectionState.Connected) OpenDashIcons.Dash else OpenDashIcons.Wifi,
-                    onClick = { onNavigate("dash") },
+                    onClick = {
+                        if (conn == ConnectionState.Connected) {
+                            onNavigate("dash")
+                        } else {
+                            runCatching {
+                                val wifi = context.applicationContext.getSystemService(android.content.Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                                if (wifi != null && !wifi.isWifiEnabled) {
+                                    @Suppress("DEPRECATION")
+                                    wifi.isWifiEnabled = true
+                                }
+                            }
+                            runCatching {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                                    val intent = android.content.Intent("android.settings.panel.action.WIFI")
+                                    context.startActivity(intent)
+                                } else {
+                                    val intent = android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS)
+                                    context.startActivity(intent)
+                                }
+                            }.onFailure {
+                                runCatching {
+                                    val intent = android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS)
+                                    context.startActivity(intent)
+                                }
+                            }
+                        }
+                    },
                     size = BtnSize.Sm,
                     modifier = Modifier.weight(1f),
                 )
@@ -142,6 +228,63 @@ fun HomeScreen(
                     size = BtnSize.Sm,
                     modifier = Modifier.weight(1f),
                 )
+            }
+        }
+
+        val track = nowPlaying
+        if (track != null && isNavigating) {
+            Spacer(Modifier.height(16.dp))
+            NowPlayingCard(
+                track = track,
+                onPrev = { dashViewModel.skipPrevious() },
+                onNext = { dashViewModel.skipNext() },
+                onPlayPause = { dashViewModel.playPause() }
+            )
+        }
+
+        val activeDest = if (routeState.navigating) routeState.destination?.name else null
+        if (!activeDest.isNullOrBlank()) {
+            Spacer(Modifier.height(16.dp))
+            OpenDashCard(
+                glow = true,
+                padding = 16.dp,
+                modifier = Modifier.fillMaxWidth().clickable { onNavigate("dash") }
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        OpenDashIcons.Navi,
+                        contentDescription = null,
+                        tint = Gold,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Active Navigation",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = GeistFamily
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            activeDest,
+                            color = TextHi,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = GeistFamily,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        OpenDashIcons.ChevronRight,
+                        contentDescription = "Resume navigation",
+                        tint = TextLo,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
 
@@ -160,12 +303,35 @@ fun HomeScreen(
             OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 6.dp) {
                 saved.forEachIndexed { i, loc ->
                     if (i > 0) OpenDashDivider(Modifier.padding(horizontal = 4.dp))
-                    OpenDashRow(
-                        loc.name, icon = OpenDashIcons.LocationPin,
-                        sub = loc.note.ifBlank { "%.4f, %.4f".format(loc.lat, loc.lng) },
-                        trailingIcon = true,
-                        onClick = { routeViewModel.selectSaved(loc); onNavigate("route") },
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Box(Modifier.weight(1f)) {
+                            OpenDashRow(
+                                loc.name, icon = OpenDashIcons.LocationPin,
+                                sub = loc.note.ifBlank { "%.4f, %.4f".format(loc.lat, loc.lng) },
+                                trailingIcon = false,
+                                onClick = { routeViewModel.selectSaved(loc); onNavigate("route") },
+                            )
+                        }
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .clickable { editingLoc = loc }
+                                .padding(8.dp),
+                        ) {
+                            Icon(
+                                OpenDashIcons.Trash,
+                                contentDescription = "Delete ${loc.name}",
+                                tint = Alert,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(4.dp))
+                    }
                 }
             }
         }
@@ -198,6 +364,15 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    editingLoc?.let { loc ->
+        EditLocationDialog(
+            loc = loc,
+            onSave = { name, note -> routeViewModel.renameSaved(loc, name, note); editingLoc = null },
+            onDelete = { routeViewModel.deleteSaved(loc); editingLoc = null },
+            onDismiss = { editingLoc = null },
+        )
     }
 }
 
@@ -292,3 +467,38 @@ private fun EmptyHint(
         }
     }
 }
+
+/** Brand line + model line for the header card. Titles usually carry only the model
+ *  ("Himalayan 450"), so unknown-prefix titles are matched against known model names
+ *  to infer the brand; the full title stays on the model line. */
+private fun getBrandAndModel(title: String): Pair<String, String> {
+    val lower = title.lowercase()
+    val brandPrefixes = listOf(
+        "royal enfield", "ktm", "suzuki", "hero", "tvs", "bmw",
+        "honda", "yezdi", "triumph", "yamaha", "bajaj", "kawasaki",
+    )
+    brandPrefixes.firstOrNull { lower.startsWith(it) }?.let { prefix ->
+        val brand = if (prefix == "royal enfield") "Royal Enfield" else title.take(prefix.length)
+        val model = title.substring(prefix.length).trim()
+        return brand to model.ifBlank { title }
+    }
+    // Same model vocabulary as getBikeDefaultDrawable.
+    val brandByModel = listOf(
+        "himalayan" to "Royal Enfield", "bullet" to "Royal Enfield",
+        "classic" to "Royal Enfield", "hunter" to "Royal Enfield",
+        "meteor" to "Royal Enfield", "guerrilla" to "Royal Enfield",
+        "interceptor" to "Royal Enfield", "continental gt" to "Royal Enfield",
+        "shotgun" to "Royal Enfield",
+        "duke" to "KTM", "adventure" to "KTM",
+        "v-strom" to "Suzuki", "xstorm" to "Suzuki",
+        "xpulse" to "Hero",
+        "rtx" to "TVS", "apache" to "TVS",
+        "g 310" to "BMW", "f 450" to "BMW",
+        "cb350" to "Honda", "hness" to "Honda", "h'ness" to "Honda", "hiness" to "Honda",
+        "scrambler" to "Triumph", "speed 400" to "Triumph",
+        "dominar" to "Bajaj", "pulsar" to "Bajaj",
+    )
+    val brand = brandByModel.firstOrNull { (model, _) -> lower.contains(model) }?.second
+    return (brand ?: "") to title
+}
+

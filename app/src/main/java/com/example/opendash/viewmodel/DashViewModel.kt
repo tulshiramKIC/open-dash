@@ -54,6 +54,8 @@ data class DashUiState(
     val remainingKm: Double? = null,
     val etaMinutes: Int? = null,
     val maneuver: String? = null,
+    val maneuverType: com.example.opendash.dash.nav.ManeuverType? = null,
+    val nextTurnM: Double? = null,
     val hasGps: Boolean = false,
     val gpsStatus: GpsStatus = GpsStatus.LOST,
     val hasRoute: Boolean = false,
@@ -67,6 +69,7 @@ data class DashUiState(
     val riderBearing: Float = 0f,
     val destLatLng: Pair<Double, Double>? = null,
     val routePoints: List<GeoPoint> = emptyList(),
+    val routeCongestion: List<Int> = emptyList(),
     val wallpaperPath: String? = null,
     val wallpaperKind: DashWallpaperKind? = null,
     val wallpaperFit: DashWallpaperFit = DashWallpaperFit.CROP,
@@ -77,6 +80,7 @@ data class DashUiState(
     val wallpaperSaving: Boolean = false,
     val wallpaperError: String? = null,
     val pendingPairingSsid: String? = null,
+    val showMediaOverlay: Boolean = false,
 )
 
 class DashViewModel(app: Application) : AndroidViewModel(app) {
@@ -99,9 +103,15 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     private val mediaInfo = MediaInfoProvider(app)
     private val callController = CallController(app)
 
+    val nowPlaying = mediaInfo.nowPlaying
+    val incomingCall = com.example.opendash.media.CallInfoProvider.incomingCall
+
     private var encoder: DashEncoder? = null
     private var streamJob: Job? = null
     private var mediaObserveJob: Job? = null
+    private var lastTrackTitle: String? = null
+    @Volatile private var showMediaOverlayUntilMs = 0L
+    private val mediaOverlayRect = android.graphics.RectF()
 
     private var userWantsConnection = false
 
@@ -154,6 +164,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var lastRerouteAt = 0L
     @Volatile private var rerouting = false
 
+    // Live traffic refresh: re-fetch the route (and its congestion) while riding, so the
+    // colored patches track changing traffic instead of freezing at planning time.
+    @Volatile private var lastTrafficRefreshAt = 0L
+    @Volatile private var refreshingTraffic = false
+
     // Map-matched rider position: snapped onto the route while on it (kills the GPS
     // lane/road jitter), raw GPS when genuinely off-route. Drives the marker + camera.
     @Volatile private var matchedLat: Double? = null
@@ -168,6 +183,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val MANUAL_IDLE_MS = 8_000L
         private const val FORCE_REDRAW_MS = 2_000L
+        private const val TRAFFIC_REFRESH_MS = 120_000L   // live traffic re-fetch cadence
         private const val SMOOTH_TAU = 0.28      // camera smoothing time constant (s)
         private const val FPS_MOVING = 4
         private const val FPS_IDLE = 2
@@ -194,6 +210,18 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
+        com.example.opendash.data.NavSettings.init(app)
+        if (MediaInfoProvider.isAccessGranted(app)) {
+            mediaInfo.start()
+        }
+        viewModelScope.launch {
+            mediaInfo.nowPlaying.collect { media ->
+                if (media != null && media.title != lastTrackTitle) {
+                    lastTrackTitle = media.title
+                    triggerMediaOverlay()
+                }
+            }
+        }
         // Reflect the rider's stored dash WiFi config (SSID may be blank until discovered).
         _ui.value = _ui.value.copy(
             ssid = dashConfig.ssid,
@@ -238,6 +266,14 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
+        viewModelScope.launch {
+            location.location.collect { loc ->
+                if (session.state.value != DashState.STREAMING) {
+                    tick()
+                }
+            }
+        }
+
         session.onError = { msg -> _ui.value = _ui.value.copy(errorMessage = msg); refreshStage() }
         session.onButton = { btn ->
             val code = btn.toInt() and 0xFF
@@ -261,10 +297,12 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                     "Previous wallpaper"
                 }
                 !isIdleWallpaperMode() && mediaActive && code == BTN_MEDIA_NEXT -> {
+                    triggerMediaOverlay()
                     mediaInfo.skipNext()
                     "Next track"
                 }
                 !isIdleWallpaperMode() && mediaActive && code == BTN_MEDIA_PREVIOUS -> {
+                    triggerMediaOverlay()
                     mediaInfo.skipPrevious()
                     "Previous track"
                 }
@@ -509,6 +547,13 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         cycleWallpaper(delta)
     }
 
+    fun getWallpaperSlideshowInterval(): Int =
+        wallpaperStore.slideshowIntervalSec
+
+    fun setWallpaperSlideshowInterval(seconds: Int) {
+        wallpaperStore.slideshowIntervalSec = seconds
+    }
+
     private fun cycleWallpaper(delta: Int) {
         val next = wallpaperStore.cycle(delta)
         invalidateWallpaperFrame()
@@ -561,24 +606,35 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         tiles.prefetch(lat, lng, loc?.latitude, loc?.longitude)
     }
 
-    fun setDestination(name: String, lat: Double?, lng: Double?) {
+    fun setDestination(
+        name: String,
+        lat: Double?,
+        lng: Double?,
+        initialRoute: Route? = null,
+        initialAlternates: List<Route> = emptyList()
+    ) {
+        val alternates = initialAlternates.filter { it != initialRoute }
         _ui.value = _ui.value.copy(
-            destinationName = name, hasRoute = false,
+            destinationName = name,
+            hasRoute = initialRoute != null,
             destLatLng = if (lat != null && lng != null) lat to lng else null,
-            routePoints = emptyList(),
+            routePoints = initialRoute?.geometry ?: emptyList(),
+            routeCongestion = initialRoute?.congestion ?: emptyList(),
         )
         destLat = lat
         destLng = lng
-        route = null
-        alternateRoutes = emptyList()
+        route = initialRoute
+        alternateRoutes = alternates.map { it.geometry }
         progressM = 0.0
         smoothEtaSec = 0.0; etaArrivalMs = 0L   // fresh ETA for the new route
         voice.resetTrip()   // fresh announcements for the new route
         session.updateRouteCard(name)
-        if (lat != null && lng != null) {
+        if (initialRoute == null && lat != null && lng != null) {
             val loc = location.lastKnown()
             tiles.prefetch(lat, lng, loc?.latitude, loc?.longitude)
             fetchRoute(lat, lng)
+        } else if (initialRoute != null) {
+            tiles.prefetchRoute(initialRoute.geometry)
         }
     }
 
@@ -622,7 +678,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 route = r
                 alternateRoutes = list.drop(1).map { it.geometry }
                 tiles.prefetchRoute(r.geometry)
-                _ui.value = _ui.value.copy(hasRoute = true, routePoints = r.geometry)
+                _ui.value = _ui.value.copy(hasRoute = true, routePoints = r.geometry, routeCongestion = r.congestion)
                 DebugLog.i("DashViewModel") { "Route ready: ${r.geometry.size} pts, ${r.totalMeters.toInt()} m, ${alternateRoutes.size} alt" }
             } else {
                 DebugLog.w("DashViewModel") { "Router returned no routes" }
@@ -678,11 +734,25 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
         streamJob = viewModelScope.launch(Dispatchers.Default) {
             var lastPrefetch = 0L
+            var lastWallpaperCycle = System.currentTimeMillis()
             var failures = 0
             // The loop must NEVER die silently: the session's heartbeats keep the dash
             // connected, so a dead frame loop = frozen map with the connection "up".
             while (isActive && session.state.value == DashState.STREAMING) {
                 try {
+                    val now = System.currentTimeMillis()
+                    if (isIdleWallpaperMode()) {
+                        val intervalSec = wallpaperStore.slideshowIntervalSec
+                        if (intervalSec > 0 && now - lastWallpaperCycle >= intervalSec * 1000L) {
+                            viewModelScope.launch(Dispatchers.Main) {
+                                cycleWallpaper(1)
+                            }
+                            lastWallpaperCycle = now
+                        }
+                    } else {
+                        lastWallpaperCycle = now
+                    }
+
                     tick()
                     // Push the (possibly cached) frame to the encoder at a steady 4 fps.
                     val bmp = frameBitmap
@@ -693,7 +763,6 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     failures = 0
                     // Warm the tile cache ahead of the rider every ~20 s.
-                    val now = System.currentTimeMillis()
                     if (now - lastPrefetch > 20_000) {
                         lastPrefetch = now
                         location.location.value?.let { tiles.prefetch(it.latitude, it.longitude) }
@@ -739,6 +808,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
         var remainingM: Double? = null
         var etaSec: Double? = null
+        var nextManeuverForUi: com.example.opendash.dash.nav.Maneuver? = null
+        var nextTurnM: Double? = null
         // Keep the last heading on GPS dropout (tunnels) — don't snap the map to north.
         var heading = loc?.bearing ?: (if (camInit) camHdg else 0f)
         var offRoute = false
@@ -746,6 +817,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         if (r != null && loc != null) {
             val ns = trackProgress(r, GeoPoint(loc.latitude, loc.longitude))
             remainingM = ns.remainingM
+            nextTurnM = ns.nextTurnM
+            nextManeuverForUi = ns.nextManeuver
             val headingKnown = loc.hasBearing() && loc.speed >= 1.5f
             val headingOff = headingKnown && angleDelta(loc.bearing, ns.heading) > 50f
             offRoute = when {
@@ -792,6 +865,8 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
         // Recompute the route if the rider has clearly left it for a few seconds.
         maybeReroute(offRoute, loc)
+        // Periodically refresh live traffic on the route (frugal; setting-gated).
+        maybeRefreshTraffic(loc)
 
         val fixAgeMs = loc?.let { System.currentTimeMillis() - it.time } ?: Long.MAX_VALUE
         gpsStatus = when {
@@ -809,7 +884,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             riderBearing = heading,
             remainingKm = remainingM?.let { it / 1000.0 },
             etaMinutes = etaSec?.let { (it / 60.0).toInt() },
-            maneuver = null,
+            maneuver = nextManeuverForUi?.instruction,
+            maneuverType = nextManeuverForUi?.type,
+            nextTurnM = nextTurnM,
             offRoute = offRoute,
         )
 
@@ -901,6 +978,36 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
      * the live GPS position to the saved destination and swaps the polyline in. Needs
      * internet — available now because only the dash sockets are bound to the dash WiFi.
      */
+    /**
+     * Refresh the route's live traffic while riding — frugal by design: only when the setting
+     * is on, we're actually moving, and at most once every [TRAFFIC_REFRESH_MS]. Re-routes from
+     * the live position to the destination (so it's also traffic-aware rerouting) and swaps the
+     * congestion in. A failed/offline call still advances the throttle so it won't spam.
+     */
+    private fun maybeRefreshTraffic(loc: android.location.Location?) {
+        if (!com.example.opendash.data.NavSettings.liveTraffic.value) return
+        val dLat = destLat; val dLng = destLng
+        if (loc == null || dLat == null || dLng == null || route == null) return
+        if (rerouting || refreshingTraffic) return
+        if (loc.speed < 1.0f) return   // < ~3.6 km/h → parked; don't burn a call
+        val now = System.currentTimeMillis()
+        if (now - lastTrafficRefreshAt < TRAFFIC_REFRESH_MS) return
+        lastTrafficRefreshAt = now
+        refreshingTraffic = true
+        viewModelScope.launch {
+            val list = Router.routes(GeoPoint(loc.latitude, loc.longitude), GeoPoint(dLat, dLng), alternatives = true)
+            val r = list.firstOrNull()
+            if (r != null) {
+                route = r
+                alternateRoutes = list.drop(1).map { it.geometry }
+                tiles.prefetchRoute(r.geometry)
+                _ui.value = _ui.value.copy(hasRoute = true, routePoints = r.geometry, routeCongestion = r.congestion)
+                DebugLog.i("DashViewModel") { "Traffic refresh: ${r.congestion.count { it > 0 }} slow/jam segs" }
+            }
+            refreshingTraffic = false
+        }
+    }
+
     private fun maybeReroute(offRoute: Boolean, loc: android.location.Location?) {
         val dLat = destLat; val dLng = destLng
         if (!offRoute || loc == null || dLat == null || dLng == null) { offRouteSince = 0L; return }
@@ -919,7 +1026,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 progressM = 0.0
                 offRouteSince = 0L
                 tiles.prefetchRoute(r.geometry)
-                _ui.value = _ui.value.copy(hasRoute = true, routePoints = r.geometry)
+                _ui.value = _ui.value.copy(hasRoute = true, routePoints = r.geometry, routeCongestion = r.congestion)
                 DebugLog.i("DashViewModel") { "Reroute ok: ${r.geometry.size} pts, ${r.totalMeters.toInt()} m, ${alternateRoutes.size} alt" }
             } else {
                 DebugLog.w("DashViewModel") { "Reroute failed (no internet?)" }
@@ -984,10 +1091,329 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             etaSecondary = etaSecondary,
             gpsWeak = gpsStatus == GpsStatus.WEAK,
             gpsLost = gpsStatus == GpsStatus.LOST,
+            showMediaOverlay = _ui.value.showMediaOverlay,
+            gpsTopOffset = run {
+                val hasMusic = _ui.value.showMediaOverlay && mediaInfo.nowPlaying.value != null
+                val hasNav = _ui.value.maneuver != null
+                if (hasMusic && hasNav) 58f else if (hasMusic || hasNav) 48f else 14f
+            }
         )
         val canvas = Canvas(bmp)
         mapRenderer.draw(canvas, frame)
         drawCallOverlay(canvas, bmp.width, bmp.height)
+        drawMediaOverlay(canvas, bmp.width, bmp.height)
+    }
+
+    private val mediaOverlayBackground by lazy {
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xB3FFFFFF.toInt()
+        }
+    }
+    private val mediaOverlayBorder by lazy {
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x80FFFFFF.toInt()
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 1.0f
+        }
+    }
+    private val mediaOverlayTitle by lazy {
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF1E2022.toInt()
+            textSize = 10f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            textAlign = android.graphics.Paint.Align.LEFT
+        }
+    }
+    private val mediaOverlayArtist by lazy {
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF687076.toInt()
+            textSize = 9f
+            textAlign = android.graphics.Paint.Align.CENTER
+        }
+    }
+
+    private fun drawManeuverArrow(canvas: Canvas, x: Float, y: Float, size: Float, type: com.example.opendash.dash.nav.ManeuverType?, color: Int, strokeWidth: Float) {
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            style = android.graphics.Paint.Style.STROKE
+            this.strokeWidth = strokeWidth
+            strokeCap = android.graphics.Paint.Cap.ROUND
+            strokeJoin = android.graphics.Paint.Join.ROUND
+        }
+        val path = android.graphics.Path()
+        when (type) {
+            com.example.opendash.dash.nav.ManeuverType.TURN_LEFT,
+            com.example.opendash.dash.nav.ManeuverType.SHARP_LEFT,
+            com.example.opendash.dash.nav.ManeuverType.SLIGHT_LEFT -> {
+                path.moveTo(x + size * 0.75f, y + size * 0.75f)
+                path.lineTo(x + size * 0.75f, y + size * 0.45f)
+                path.lineTo(x + size * 0.25f, y + size * 0.45f)
+                path.moveTo(x + size * 0.4f, y + size * 0.3f)
+                path.lineTo(x + size * 0.25f, y + size * 0.45f)
+                path.lineTo(x + size * 0.4f, y + size * 0.6f)
+            }
+            com.example.opendash.dash.nav.ManeuverType.TURN_RIGHT,
+            com.example.opendash.dash.nav.ManeuverType.SHARP_RIGHT,
+            com.example.opendash.dash.nav.ManeuverType.SLIGHT_RIGHT -> {
+                path.moveTo(x + size * 0.25f, y + size * 0.75f)
+                path.lineTo(x + size * 0.25f, y + size * 0.45f)
+                path.lineTo(x + size * 0.75f, y + size * 0.45f)
+                path.moveTo(x + size * 0.6f, y + size * 0.3f)
+                path.lineTo(x + size * 0.75f, y + size * 0.45f)
+                path.lineTo(x + size * 0.6f, y + size * 0.6f)
+            }
+            com.example.opendash.dash.nav.ManeuverType.UTURN -> {
+                path.moveTo(x + size * 0.75f, y + size * 0.75f)
+                path.lineTo(x + size * 0.75f, y + size * 0.45f)
+                val r = android.graphics.RectF(x + size * 0.25f, y + size * 0.25f, x + size * 0.75f, y + size * 0.65f)
+                path.arcTo(r, 0f, -180f, false)
+                path.lineTo(x + size * 0.25f, y + size * 0.75f)
+                path.moveTo(x + size * 0.1f, y + size * 0.6f)
+                path.lineTo(x + size * 0.25f, y + size * 0.75f)
+                path.lineTo(x + size * 0.4f, y + size * 0.6f)
+            }
+            else -> {
+                path.moveTo(x + size * 0.5f, y + size * 0.75f)
+                path.lineTo(x + size * 0.5f, y + size * 0.25f)
+                path.moveTo(x + size * 0.35f, y + size * 0.4f)
+                path.lineTo(x + size * 0.5f, y + size * 0.25f)
+                path.lineTo(x + size * 0.65f, y + size * 0.4f)
+            }
+        }
+        canvas.drawPath(path, paint)
+    }
+
+    private fun drawMediaOverlay(canvas: Canvas, width: Int, height: Int) {
+        val hasMusic = _ui.value.showMediaOverlay && mediaInfo.nowPlaying.value != null
+        val hasNav = _ui.value.maneuver != null
+        if (!hasMusic && !hasNav) return
+        
+        val centerX = width / 2f
+        val centerY = height / 2f
+        
+        if (hasMusic) {
+            val track = mediaInfo.nowPlaying.value!!
+            val title = if (track.title.length > 32) track.title.take(31) + "..." else track.title
+            val Rc = 134f
+            val artSize = 18f
+            val spacing = 6f
+            val edgePadding = 14f
+            
+            mediaOverlayTitle.apply {
+                textSize = 10f
+                isFakeBoldText = true
+            }
+            val textWidth = mediaOverlayTitle.measureText(title)
+            val totalLength = edgePadding * 2f + artSize + spacing + textWidth
+            val sweepAngle = ((totalLength / Rc) * (180f / Math.PI.toFloat())).coerceIn(45f, 130f)
+            val startAngle = 270f - sweepAngle / 2f
+            val endAngle = 270f + sweepAngle / 2f
+            
+            val arcPath = android.graphics.Path().apply {
+                val rect = android.graphics.RectF(centerX - Rc, centerY - Rc, centerX + Rc, centerY + Rc)
+                addArc(rect, startAngle, sweepAngle)
+            }
+            
+            val fStart = startAngle / 360f
+            val fCenter = 270f / 360f
+            val fEnd = endAngle / 360f
+            val positions = floatArrayOf(0.0f, maxOf(0.0f, fStart), fCenter, fEnd, 1.0f)
+            
+            val borderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            val borderShader = android.graphics.SweepGradient(centerX, centerY, borderColors, positions)
+            val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 27.5f
+                strokeCap = android.graphics.Paint.Cap.BUTT
+                setShader(borderShader)
+            }
+            canvas.drawPath(arcPath, borderPaint)
+            
+            val bgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            val bgShader = android.graphics.SweepGradient(centerX, centerY, bgColors, positions)
+            val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 26f
+                strokeCap = android.graphics.Paint.Cap.BUTT
+                setShader(bgShader)
+            }
+            canvas.drawPath(arcPath, bgPaint)
+            
+            val arcLength = Rc * (sweepAngle * Math.PI / 180.0).toFloat()
+            val contentWidth = artSize + spacing + textWidth
+            val startOffset = (arcLength - contentWidth) / 2f
+            
+            val artOffset = startOffset + artSize / 2f
+            val artAngle = startAngle + (artOffset / Rc) * (180f / Math.PI.toFloat())
+            val thetaRad = artAngle * (Math.PI / 180.0)
+            val artX = (centerX + Rc * Math.cos(thetaRad)).toFloat()
+            val artY = (centerY + Rc * Math.sin(thetaRad)).toFloat()
+            
+            val whitePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.WHITE
+                style = android.graphics.Paint.Style.FILL
+            }
+            canvas.drawCircle(artX, artY, 9.5f, whitePaint)
+            
+            if (track.art != null) {
+                canvas.save()
+                val clipPath = android.graphics.Path().apply {
+                    addCircle(artX, artY, 8f, android.graphics.Path.Direction.CW)
+                }
+                canvas.clipPath(clipPath)
+                canvas.drawBitmap(track.art!!, null, android.graphics.RectF(artX - 8f, artY - 8f, artX + 8f, artY + 8f), null)
+                canvas.restore()
+            }
+            
+            val textStart = startOffset + artSize + spacing
+            mediaOverlayTitle.textAlign = android.graphics.Paint.Align.LEFT
+            mediaOverlayTitle.color = 0xFF1E2022.toInt()
+            canvas.drawTextOnPath(title, arcPath, textStart, 3.5f, mediaOverlayTitle)
+            
+            if (hasNav) {
+                val dist = _ui.value.nextTurnM
+                val distText = dist?.let { if (it < 1000.0) "${it.toInt()} m" else "%.1f km".format(it / 1000.0) } ?: ""
+                val RcTbt = 110f
+                val iconSize = 15f
+                val tbtSpacing = 5f
+                val tbtEdgePadding = 12f
+                
+                val tbtTextPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    color = 0xFF1E2022.toInt()
+                    textSize = 8.5f
+                    isFakeBoldText = true
+                    typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+                }
+                val tbtTextWidth = tbtTextPaint.measureText(distText)
+                val tbtTotalLength = tbtEdgePadding * 2f + iconSize + tbtSpacing + tbtTextWidth
+                val tbtSweepAngle = ((tbtTotalLength / RcTbt) * (180f / Math.PI.toFloat())).coerceIn(40f, 130f)
+                val tbtStartAngle = 270f - tbtSweepAngle / 2f
+                val tbtEndAngle = 270f + tbtSweepAngle / 2f
+                
+                val tbtArcPath = android.graphics.Path().apply {
+                    val rect = android.graphics.RectF(centerX - RcTbt, centerY - RcTbt, centerX + RcTbt, centerY + RcTbt)
+                    addArc(rect, tbtStartAngle, tbtSweepAngle)
+                }
+                
+                val tbtFStart = tbtStartAngle / 360f
+                val tbtFCenter = 270f / 360f
+                val tbtFEnd = tbtEndAngle / 360f
+                val tbtPositions = floatArrayOf(0.0f, maxOf(0.0f, tbtFStart), tbtFCenter, tbtFEnd, 1.0f)
+                
+                val tbtBorderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                val tbtBorderShader = android.graphics.SweepGradient(centerX, centerY, tbtBorderColors, tbtPositions)
+                val tbtBorderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 23.5f
+                    strokeCap = android.graphics.Paint.Cap.BUTT
+                    setShader(tbtBorderShader)
+                }
+                canvas.drawPath(tbtArcPath, tbtBorderPaint)
+                
+                val tbtBgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                val tbtBgShader = android.graphics.SweepGradient(centerX, centerY, tbtBgColors, tbtPositions)
+                val tbtBgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 22f
+                    strokeCap = android.graphics.Paint.Cap.BUTT
+                    setShader(tbtBgShader)
+                }
+                canvas.drawPath(tbtArcPath, tbtBgPaint)
+                
+                val tbtArcLength = RcTbt * (tbtSweepAngle * Math.PI / 180.0).toFloat()
+                val tbtContentWidth = iconSize + tbtSpacing + tbtTextWidth
+                val tbtStartOffset = (tbtArcLength - tbtContentWidth) / 2f
+                
+                val iconOffset = tbtStartOffset + iconSize / 2f
+                val iconAngle = tbtStartAngle + (iconOffset / RcTbt) * (180f / Math.PI.toFloat())
+                val tbtThetaRad = iconAngle * (Math.PI / 180.0)
+                val iconX = (centerX + RcTbt * Math.cos(tbtThetaRad)).toFloat()
+                val iconY = (centerY + RcTbt * Math.sin(tbtThetaRad)).toFloat()
+                
+                drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, _ui.value.maneuverType, 0xFF1E2022.toInt(), 2.5f)
+                
+                val tbtTextStart = tbtStartOffset + iconSize + tbtSpacing
+                tbtTextPaint.textAlign = android.graphics.Paint.Align.LEFT
+                canvas.drawTextOnPath(distText, tbtArcPath, tbtTextStart, 3.0f, tbtTextPaint)
+            }
+        } else {
+            val dist = _ui.value.nextTurnM
+            val distText = dist?.let { if (it < 1000.0) "${it.toInt()} m" else "%.1f km".format(it / 1000.0) } ?: ""
+            val Rc = 134f
+            val iconSize = 18f
+            val spacing = 6f
+            val edgePadding = 14f
+            
+            val tbtTextPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFF1E2022.toInt()
+                textSize = 10f
+                isFakeBoldText = true
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            }
+            val textWidth = tbtTextPaint.measureText(distText)
+            val totalLength = edgePadding * 2f + iconSize + spacing + textWidth
+            val sweepAngle = ((totalLength / Rc) * (180f / Math.PI.toFloat())).coerceIn(45f, 130f)
+            val startAngle = 270f - sweepAngle / 2f
+            val endAngle = 270f + sweepAngle / 2f
+            
+            val arcPath = android.graphics.Path().apply {
+                val rect = android.graphics.RectF(centerX - Rc, centerY - Rc, centerX + Rc, centerY + Rc)
+                addArc(rect, startAngle, sweepAngle)
+            }
+            
+            val fStart = startAngle / 360f
+            val fCenter = 270f / 360f
+            val fEnd = endAngle / 360f
+            val positions = floatArrayOf(0.0f, maxOf(0.0f, fStart), fCenter, fEnd, 1.0f)
+            
+            val borderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            val borderShader = android.graphics.SweepGradient(centerX, centerY, borderColors, positions)
+            val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 27.5f
+                strokeCap = android.graphics.Paint.Cap.BUTT
+                setShader(borderShader)
+            }
+            canvas.drawPath(arcPath, borderPaint)
+            
+            val bgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            val bgShader = android.graphics.SweepGradient(centerX, centerY, bgColors, positions)
+            val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 26f
+                strokeCap = android.graphics.Paint.Cap.BUTT
+                setShader(bgShader)
+            }
+            canvas.drawPath(arcPath, bgPaint)
+            
+            val arcLength = Rc * (sweepAngle * Math.PI / 180.0).toFloat()
+            val contentWidth = iconSize + spacing + textWidth
+            val startOffset = (arcLength - contentWidth) / 2f
+            
+            val iconOffset = startOffset + iconSize / 2f
+            val iconAngle = startAngle + (iconOffset / Rc) * (180f / Math.PI.toFloat())
+            val thetaRad = iconAngle * (Math.PI / 180.0)
+            val iconX = (centerX + Rc * Math.cos(thetaRad)).toFloat()
+            val iconY = (centerY + Rc * Math.sin(thetaRad)).toFloat()
+            
+            drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, _ui.value.maneuverType, 0xFF1E2022.toInt(), 3.0f)
+            
+            val textStart = startOffset + iconSize + spacing
+            tbtTextPaint.textAlign = android.graphics.Paint.Align.LEFT
+            canvas.drawTextOnPath(distText, arcPath, textStart, 3.5f, tbtTextPaint)
+        }
+    }
+
+    private fun triggerMediaOverlay() {
+        showMediaOverlayUntilMs = System.currentTimeMillis() + 6000L
+        _ui.update { it.copy(showMediaOverlay = true) }
+        viewModelScope.launch {
+            delay(6050L)
+            val stillActive = System.currentTimeMillis() < showMediaOverlayUntilMs
+            if (!stillActive) {
+                _ui.update { it.copy(showMediaOverlay = false) }
+            }
+        }
     }
 
     private val callOverlayBackground by lazy {
@@ -1116,7 +1542,6 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun startMediaForwarding() {
-        mediaInfo.start()
         mediaObserveJob?.cancel()
         mediaObserveJob = viewModelScope.launch {
             launch {
@@ -1139,23 +1564,45 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     private fun stopMediaForwarding() {
         mediaObserveJob?.cancel()
         mediaObserveJob = null
-        mediaInfo.stop()
         session.updateNowPlaying(null, "", "")
         session.updateCall(null)
     }
 
-    private fun answerCall(call: IncomingCall) {
+    fun answerCall(call: IncomingCall) {
         val handled = call.answerIntent?.let { runCatching { it.send() }.isSuccess } ?: false
         if (!handled) callController.answer()
     }
 
-    private fun endCall(call: IncomingCall) {
+    fun endCall(call: IncomingCall) {
         val handled = call.declineIntent?.let { runCatching { it.send() }.isSuccess } ?: false
         if (!handled) callController.hangup()
     }
 
+    fun skipNext() {
+        triggerMediaOverlay()
+        mediaInfo.skipNext()
+    }
+
+    fun skipPrevious() {
+        triggerMediaOverlay()
+        mediaInfo.skipPrevious()
+    }
+
+    fun playPause() {
+        val track = mediaInfo.nowPlaying.value
+        if (track != null) {
+            triggerMediaOverlay()
+            if (track.isPlaying) {
+                mediaInfo.pause()
+            } else {
+                mediaInfo.play()
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
+        mediaInfo.stop()
         stopRecording()        // save the in-progress ride if the app is closed mid-session
         teardown()
         session.disconnect()

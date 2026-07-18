@@ -14,6 +14,7 @@ data class VehicleProfile(
     val puc: String,
     val insurance: String,
     val service: String,
+    val profileIcon: String = "default",
 )
 
 object VehicleStore {
@@ -29,6 +30,7 @@ object VehicleStore {
         puc = "Not set",
         insurance = "Not set",
         service = "Not set",
+        profileIcon = "default",
     )
 
     private val _vehicles = MutableStateFlow(listOf(defaultVehicle))
@@ -54,6 +56,7 @@ object VehicleStore {
                             puc = item.optString("puc", "Not set"),
                             insurance = item.optString("insurance", "Not set"),
                             service = item.optString("service", "Not set"),
+                            profileIcon = item.optString("profileIcon", "default"),
                         )
                     )
                 }
@@ -88,6 +91,16 @@ object VehicleStore {
         persist(context)
     }
 
+    fun delete(context: Context, vehicleId: String) {
+        if (_vehicles.value.size <= 1) return
+        val wasActive = vehicleId == _activeVehicleId.value
+        _vehicles.value = _vehicles.value.filter { it.id != vehicleId }
+        if (wasActive) {
+            _activeVehicleId.value = _vehicles.value.first().id
+        }
+        persist(context)
+    }
+
     private fun persist(context: Context) {
         val array = JSONArray()
         _vehicles.value.forEach { vehicle ->
@@ -99,6 +112,7 @@ object VehicleStore {
                     .put("puc", vehicle.puc)
                     .put("insurance", vehicle.insurance)
                     .put("service", vehicle.service)
+                    .put("profileIcon", vehicle.profileIcon)
             )
         }
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

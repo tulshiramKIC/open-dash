@@ -4,17 +4,34 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Place
+import androidx.compose.material.icons.outlined.Terrain
+import androidx.compose.material.icons.outlined.TurnLeft
+import androidx.compose.material.icons.outlined.TurnRight
+import androidx.compose.material.icons.outlined.TurnSlightLeft
+import androidx.compose.material.icons.outlined.TurnSlightRight
+import androidx.compose.material.icons.outlined.UTurnLeft
+
 import androidx.compose.material.icons.outlined.CalendarToday
 import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Reorder
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Directions
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -48,6 +65,7 @@ import androidx.compose.material.icons.outlined.TwoWheeler
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.WaterDrop
+import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -79,9 +97,14 @@ object OpenDashIcons {
     val Check         = Icons.Outlined.Check
     val X             = Icons.Outlined.Close
     val ArrowUp       = Icons.Outlined.Navigation
+    val ArrowUpward   = Icons.Outlined.ArrowUpward
+    val ArrowDownward = Icons.Outlined.ArrowDownward
+    val Reorder       = Icons.Outlined.Reorder
+    val Circle        = Icons.Outlined.RadioButtonUnchecked
     val Gauge         = Icons.Outlined.Speed
     val Cal           = Icons.Outlined.CalendarToday
     val Pin           = Icons.Outlined.Route
+    val Save          = Icons.Outlined.BookmarkBorder
     val Share         = Icons.Outlined.Share
     val Power         = Icons.Outlined.PowerSettingsNew
     val Person        = Icons.Outlined.Person
@@ -109,24 +132,24 @@ object OpenDashIcons {
     val Units         = Icons.Outlined.Straighten
     val Layers        = Icons.Outlined.Layers
     val Directions    = Icons.Outlined.Directions
+    val Download      = Icons.Outlined.Download
+    val Trash         = Icons.Outlined.Delete
+    val Help          = Icons.Outlined.HelpOutline
 
-    // ---- Custom icons (SVG path → ImageVector) ----
-    val Dash: ImageVector = pathVec(
-        // Outer ring
-        "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
-        // Inner ring (inner dot of Tripper)
-        "M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"
-    )
+    // ---- Custom icons (mapped to official high-quality Material icons) ----
+    val Dash          = Icons.Outlined.Dashboard
+    val Chain         = Icons.Outlined.Link
+    val LocationPin   = Icons.Outlined.Place
+    val BikeAdventure = Icons.Outlined.Terrain
+    val BikeSport     = Icons.Outlined.Speed
+    val BikeClassic   = Icons.Outlined.TwoWheeler
 
-    val Chain: ImageVector = pathVec(
-        "M9 12a3 3 0 0 1 3-3h0a3 3 0 0 1 0 6",
-        "M15 12a3 3 0 0 1-3 3h0a3 3 0 0 1 0-6"
-    )
-
-    val LocationPin: ImageVector = pathVec(
-        "M12 21s7-6.3 7-11a7 7 0 1 0-14 0c0 4.7 7 11 7 11Z",
-        "M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"
-    )
+    // ---- Directional nav arrows ----
+    val TurnLeft      = Icons.Outlined.TurnLeft
+    val TurnRight     = Icons.Outlined.TurnRight
+    val SlightLeft    = Icons.Outlined.TurnSlightLeft
+    val SlightRight   = Icons.Outlined.TurnSlightRight
+    val UTurn         = Icons.Outlined.UTurnLeft
 }
 
 private fun pathVec(vararg paths: String, strokeWidth: Float = 1.7f): ImageVector =

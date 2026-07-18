@@ -222,6 +222,7 @@ fun OpenDashChip(
     tone: ChipTone = ChipTone.Neutral,
     dot: Boolean = false,
     icon: ImageVector? = null,
+    onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val (container, labelColor) = when (tone) {
@@ -233,8 +234,8 @@ fun OpenDashChip(
     }
 
     AssistChip(
-        onClick = {},
-        enabled = false,
+        onClick = onClick ?: {},
+        enabled = onClick != null,
         modifier = modifier
             .height(32.dp),
         label = {
@@ -252,6 +253,9 @@ fun OpenDashChip(
         shape = ChipShape,
         border = null,
         colors = AssistChipDefaults.assistChipColors(
+            containerColor = container,
+            labelColor = labelColor,
+            leadingIconContentColor = labelColor,
             disabledContainerColor = container,
             disabledLabelColor = labelColor,
             disabledLeadingIconContentColor = labelColor,

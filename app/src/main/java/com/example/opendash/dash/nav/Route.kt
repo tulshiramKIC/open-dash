@@ -25,6 +25,21 @@ enum class ManeuverType { CONTINUE, TURN_LEFT, TURN_RIGHT, SLIGHT_LEFT, SLIGHT_R
                 }
             else -> CONTINUE
         }
+
+        /** Map a Google Routes navigationInstruction.maneuver enum to our enum. */
+        fun fromGoogle(maneuver: String?): ManeuverType = when (maneuver) {
+            "DEPART"                              -> DEPART
+            "DESTINATION", "DESTINATION_LEFT", "DESTINATION_RIGHT" -> ARRIVE
+            "TURN_LEFT"                           -> TURN_LEFT
+            "TURN_RIGHT"                          -> TURN_RIGHT
+            "TURN_SLIGHT_LEFT", "FORK_LEFT", "RAMP_LEFT"   -> SLIGHT_LEFT
+            "TURN_SLIGHT_RIGHT", "FORK_RIGHT", "RAMP_RIGHT" -> SLIGHT_RIGHT
+            "TURN_SHARP_LEFT"                     -> SHARP_LEFT
+            "TURN_SHARP_RIGHT"                    -> SHARP_RIGHT
+            "UTURN_LEFT", "UTURN_RIGHT"           -> UTURN
+            "ROUNDABOUT_LEFT", "ROUNDABOUT_RIGHT" -> ROUNDABOUT
+            else                                  -> CONTINUE   // STRAIGHT, MERGE, NAME_CHANGE…
+        }
     }
 }
 
@@ -48,6 +63,126 @@ data class Route(
     val totalSeconds: Double,
     /** Cumulative distance (m) at each geometry vertex — same length as [geometry]. */
     val cumulative: DoubleArray,
+    /**
+     * Live traffic per geometry segment (size = geometry.size - 1): 0 = normal/free-flow,
+     * 1 = slow, 2 = jam. Empty when the provider returned no traffic data. Used to color
+     * the route line like an in-navigation traffic view.
+     */
+    val congestion: List<Int> = emptyList(),
 ) {
     val destination: GeoPoint? get() = geometry.lastOrNull()
+
+    fun toJson(): String {
+        val obj = org.json.JSONObject()
+        
+        // Geometry
+        val geomArr = org.json.JSONArray()
+        geometry.forEach { gp ->
+            geomArr.put(org.json.JSONArray().put(gp.lat).put(gp.lng))
+        }
+        obj.put("geometry", geomArr)
+        
+        // Maneuvers
+        val manArr = org.json.JSONArray()
+        maneuvers.forEach { m ->
+            val mObj = org.json.JSONObject()
+            mObj.put("type", m.type.name)
+            mObj.put("instruction", m.instruction)
+            mObj.put("lat", m.location.lat)
+            mObj.put("lng", m.location.lng)
+            mObj.put("cumulative", m.cumulativeMeters)
+            manArr.put(mObj)
+        }
+        obj.put("maneuvers", manArr)
+        
+        obj.put("totalMeters", totalMeters)
+        obj.put("totalSeconds", totalSeconds)
+        
+        // Cumulative
+        val cumArr = org.json.JSONArray()
+        cumulative.forEach { cumArr.put(it) }
+        obj.put("cumulative", cumArr)
+        
+        // Congestion
+        val congArr = org.json.JSONArray()
+        congestion.forEach { congArr.put(it) }
+        obj.put("congestion", congArr)
+        
+        return obj.toString()
+    }
+
+    companion object {
+        fun fromJson(jsonStr: String): Route {
+            val obj = org.json.JSONObject(jsonStr)
+            
+            // Geometry
+            val geomArr = obj.getJSONArray("geometry")
+            val geometry = mutableListOf<GeoPoint>()
+            for (i in 0 until geomArr.length()) {
+                val pt = geomArr.getJSONArray(i)
+                geometry.add(GeoPoint(pt.getDouble(0), pt.getDouble(1)))
+            }
+            
+            // Maneuvers
+            val manArr = obj.getJSONArray("maneuvers")
+            val maneuvers = mutableListOf<Maneuver>()
+            for (i in 0 until manArr.length()) {
+                val mObj = manArr.getJSONObject(i)
+                maneuvers.add(Maneuver(
+                    type = ManeuverType.valueOf(mObj.getString("type")),
+                    instruction = mObj.getString("instruction"),
+                    location = GeoPoint(mObj.getDouble("lat"), mObj.getDouble("lng")),
+                    cumulativeMeters = mObj.getDouble("cumulative")
+                ))
+            }
+            
+            val totalMeters = obj.getDouble("totalMeters")
+            val totalSeconds = obj.getDouble("totalSeconds")
+            
+            // Cumulative
+            val cumArr = obj.getJSONArray("cumulative")
+            val cumulative = DoubleArray(cumArr.length())
+            for (i in 0 until cumArr.length()) {
+                cumulative[i] = cumArr.getDouble(i)
+            }
+            
+            // Congestion (optional — recorded trails don't have congestion data)
+            val congestion = mutableListOf<Int>()
+            if (obj.has("congestion")) {
+                val congArr = obj.getJSONArray("congestion")
+                for (i in 0 until congArr.length()) {
+                    congestion.add(congArr.getInt(i))
+                }
+            }
+            
+            return Route(
+                geometry = geometry,
+                maneuvers = maneuvers,
+                totalMeters = totalMeters,
+                totalSeconds = totalSeconds,
+                cumulative = cumulative,
+                congestion = congestion
+            )
+        }
+
+        fun routesToJson(routes: List<Route>, selectedIndex: Int): String {
+            val obj = org.json.JSONObject()
+            obj.put("selectedRouteIndex", selectedIndex)
+            val arr = org.json.JSONArray()
+            routes.forEach { arr.put(org.json.JSONObject(it.toJson())) }
+            obj.put("routes", arr)
+            return obj.toString()
+        }
+
+        fun routesFromJson(jsonStr: String): Pair<List<Route>, Int> {
+            val obj = org.json.JSONObject(jsonStr)
+            val selected = obj.optInt("selectedRouteIndex", 0)
+            val arr = obj.getJSONArray("routes")
+            val list = mutableListOf<Route>()
+            for (i in 0 until arr.length()) {
+                list.add(fromJson(arr.getJSONObject(i).toString()))
+            }
+            return list to selected
+        }
+    }
 }

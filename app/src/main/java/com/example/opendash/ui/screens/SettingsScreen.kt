@@ -64,18 +64,16 @@ import com.example.opendash.data.DashWallpaperFit
 import com.example.opendash.data.DashWallpaperKind
 import com.example.opendash.data.DashWallpaperPaths
 import com.example.opendash.data.CurrencySettings
+import com.example.opendash.data.NavSettings
 import com.example.opendash.data.OpenDashCurrency
 import com.example.opendash.viewmodel.ConnectionState
 import com.example.opendash.viewmodel.DashViewModel
 
 private enum class MorePage(val title: String) {
-    ROOT("More"),
-    SETTINGS("Settings"),
-    ABOUT("About"),
+    ROOT("Settings"),
     HELP("Help"),
     TERMS("Terms & Conditions"),
     LICENSE("License"),
-    CHANGELOG("Changelog"),
 }
 
 @Composable
@@ -84,10 +82,14 @@ fun SettingsScreen(
     onConnChange: (ConnectionState) -> Unit,
     dashViewModel: DashViewModel,
     onBack: () -> Unit,
+    onOpenOfflineMaps: () -> Unit = {},
 ) {
     val dashUi by dashViewModel.ui.collectAsState()
 
     var autoConnect by remember { mutableStateOf(true) }
+    var slideshowInterval by remember {
+        mutableStateOf(dashViewModel.getWallpaperSlideshowInterval())
+    }
     var screenOff   by remember { mutableStateOf(true) }
     var keepAwake   by remember { mutableStateOf(true) }
     var units       by remember { mutableStateOf("Kilometres") }
@@ -116,8 +118,11 @@ fun SettingsScreen(
     ) { callAccessGranted = it }
     val themeMode by OpenDashThemeController.mode.collectAsState()
     val dynamicColor by OpenDashThemeController.dynamic.collectAsState()
+    val liveTraffic by NavSettings.liveTraffic.collectAsState()
+    val customTrailsEnabled by NavSettings.customTrailsEnabled.collectAsState()
     remember(ctx) {
         CurrencySettings.init(ctx)
+        NavSettings.init(ctx)
         true
     }
     val selectedCurrency by CurrencySettings.currency.collectAsState()
@@ -168,7 +173,7 @@ fun SettingsScreen(
     var page by remember { mutableStateOf(MorePage.ROOT) }
     BackHandler(enabled = page != MorePage.ROOT) { page = MorePage.ROOT }
 
-    if (page != MorePage.ROOT && page != MorePage.SETTINGS) {
+    if (page != MorePage.ROOT) {
         MoreInformationPage(page = page, onBack = { page = MorePage.ROOT })
         return
     }
@@ -179,19 +184,12 @@ fun SettingsScreen(
             .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
             .padding(18.dp)
-            .padding(bottom = 24.dp),
+            .padding(bottom = 100.dp),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth().padding(bottom = 22.dp, top = 10.dp),
         ) {
-            if (page == MorePage.SETTINGS) {
-                OpenDashIconBtn(
-                    icon = OpenDashIcons.ChevronLeft,
-                    onClick = { page = MorePage.ROOT },
-                    modifier = Modifier.padding(end = 10.dp),
-                )
-            }
             Text(
                 page.title,
                 color = MaterialTheme.colorScheme.onBackground,
@@ -201,56 +199,18 @@ fun SettingsScreen(
                 modifier = Modifier.weight(1f),
             )
             if (page == MorePage.ROOT) {
-                Icon(OpenDashIcons.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
-            }
-        }
-
-        if (page == MorePage.ROOT) {
-            SettingsGroup(padding = 6.dp) {
-                MoreRow(
-                    OpenDashIcons.Sync,
-                    "Update from GitHub",
-                    updateMessage ?: "Check the latest OpenDash release",
-                    last = true,
-                    control = {
-                        OpenDashBtn(
-                            "Check",
-                            onClick = { updateMessage = "OpenDash ${BuildConfig.VERSION_NAME} is installed. Check GitHub Releases for newer builds." },
-                            variant = BtnVariant.Secondary,
-                            size = BtnSize.Sm,
-                        )
-                    },
+                OpenDashIconBtn(
+                    icon = OpenDashIcons.Help,
+                    onClick = { page = MorePage.HELP },
+                    size = 42.dp,
                 )
             }
-
-            SectionLabel("General")
-            SettingsGroup(padding = 6.dp) {
-                MoreRow(OpenDashIcons.Gear, "Settings", "Connection, ride, wallpaper, voice, units", onClick = { page = MorePage.SETTINGS })
-                SettingsDivider(Modifier.padding(horizontal = 6.dp))
-                MoreRow(OpenDashIcons.Dash, "About", "OpenDash v${BuildConfig.VERSION_NAME}", onClick = { page = MorePage.ABOUT })
-                SettingsDivider(Modifier.padding(horizontal = 6.dp))
-                MoreRow(OpenDashIcons.Bell, "Help", "Connection and dash wallpaper guidance", onClick = { page = MorePage.HELP })
-                SettingsDivider(Modifier.padding(horizontal = 6.dp))
-                MoreRow(OpenDashIcons.Lock, "Terms & Conditions", "Usage terms", onClick = { page = MorePage.TERMS })
-                SettingsDivider(Modifier.padding(horizontal = 6.dp))
-                MoreRow(OpenDashIcons.Flag, "License", "Open source notices", onClick = { page = MorePage.LICENSE })
-                SettingsDivider(Modifier.padding(horizontal = 6.dp))
-                MoreRow(OpenDashIcons.Cal, "Changelog", "1.3 stable: expressive UI, themes, vehicles, garage", last = true, onClick = { page = MorePage.CHANGELOG })
-            }
-            return@Column
         }
 
         SectionLabel("Connection")
         SettingsGroup(padding = 6.dp) {
-            SettingRow(OpenDashIcons.Bt, "Tripper Dash",
-                sub = when (conn) { ConnectionState.Connected -> "Connected"; ConnectionState.Searching -> "Connecting…"; ConnectionState.Offline -> "Not connected" },
-                control = { OpenDashChip(if (conn == ConnectionState.Connected) "Linked" else "Off", if (conn == ConnectionState.Connected) ChipTone.Gold else ChipTone.Off, dot = true) })
-            SettingsDivider(Modifier.padding(horizontal = 6.dp))
             SettingRow(OpenDashIcons.Sync, "Auto-connect on start", "Link when the bike is near",
-                control = { SettingsToggle(autoConnect) { autoConnect = it } })
-            SettingsDivider(Modifier.padding(horizontal = 6.dp))
-            SettingRow(OpenDashIcons.Zap, "Stream quality", "Balanced · saves battery",
-                control = { Icon(OpenDashIcons.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) }, last = true)
+                control = { SettingsToggle(autoConnect) { autoConnect = it } }, last = true)
         }
 
         SectionLabel("During a ride")
@@ -337,15 +297,40 @@ fun SettingsScreen(
                         }
                     }
                 },
+                last = true,
             )
+        }
+
+        SectionLabel("Navigation")
+        SettingsGroup(padding = 6.dp) {
             SettingRow(
-                icon = OpenDashIcons.Zap,
-                title = "Material You colours",
-                sub = "Tint the app from your wallpaper (Android 12+)",
+                icon = OpenDashIcons.Download,
+                title = "Offline maps",
+                sub = "Download map areas to navigate with no signal",
+                control = { Icon(OpenDashIcons.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
+                onClick = onOpenOfflineMaps,
+            )
+            SettingsDivider(Modifier.padding(horizontal = 6.dp))
+            SettingRow(
+                icon = OpenDashIcons.Navi,
+                title = "Live traffic updates",
+                sub = "Refresh route traffic while riding (uses a little data/API). Off = traffic shown once when the route is planned.",
                 control = {
                     androidx.compose.material3.Switch(
-                        checked = dynamicColor,
-                        onCheckedChange = { OpenDashThemeController.setDynamic(ctx, it) },
+                        checked = liveTraffic,
+                        onCheckedChange = { NavSettings.setLiveTraffic(ctx, it) },
+                    )
+                },
+            )
+            SettingsDivider(Modifier.padding(horizontal = 6.dp))
+            SettingRow(
+                icon = OpenDashIcons.Pin,
+                title = "Custom trails & tracking",
+                sub = "Enable recording manual trail paths and importing GPX coordinates",
+                control = {
+                    androidx.compose.material3.Switch(
+                        checked = customTrailsEnabled,
+                        onCheckedChange = { NavSettings.setCustomTrailsEnabled(ctx, it) },
                     )
                 },
                 last = true,
@@ -487,94 +472,224 @@ fun SettingsScreen(
                         modifier = Modifier.weight(1f),
                     )
                 } else {
-                    if (dashUi.wallpaperGalleryCount > 1) {
-                        OpenDashIconBtn(
-                            icon = OpenDashIcons.ChevronLeft,
-                            onClick = { dashViewModel.cycleWallpaperFromSettings(-1) },
-                            size = 40.dp,
-                        )
-                    }
-                    OpenDashBtn(
-                        "Add media",
-                        onClick = {
-                            wallpaperMultiPicker.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (dashUi.wallpaperGalleryCount > 1) {
+                                OpenDashIconBtn(
+                                    icon = OpenDashIcons.ChevronLeft,
+                                    onClick = { dashViewModel.cycleWallpaperFromSettings(-1) },
+                                    size = 40.dp,
+                                )
+                            }
+                            OpenDashBtn(
+                                "Add media",
+                                onClick = {
+                                    wallpaperMultiPicker.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                    )
+                                },
+                                icon = OpenDashIcons.Plus,
+                                variant = BtnVariant.Primary,
+                                size = BtnSize.Sm,
+                                modifier = Modifier.weight(1f),
                             )
-                        },
-                        icon = OpenDashIcons.Plus,
-                        variant = BtnVariant.Primary,
-                        size = BtnSize.Sm,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (dashUi.wallpaperGalleryCount > 1) {
-                        OpenDashIconBtn(
-                            icon = OpenDashIcons.ChevronRight,
-                            onClick = { dashViewModel.cycleWallpaperFromSettings(1) },
-                            size = 40.dp,
-                        )
+                            if (dashUi.wallpaperGalleryCount > 1) {
+                                OpenDashIconBtn(
+                                    icon = OpenDashIcons.ChevronRight,
+                                    onClick = { dashViewModel.cycleWallpaperFromSettings(1) },
+                                    size = 40.dp,
+                                )
+                            }
+                        }
+                        if (dashUi.wallpaperPath != null) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OpenDashBtn(
+                                    "Edit current",
+                                    onClick = {
+                                        pendingWallpaperUri = null
+                                        pendingWallpaperPreview = wallpaperPreview
+                                        cropX = dashUi.wallpaperCropX
+                                        cropY = dashUi.wallpaperCropY
+                                        fitMode = dashUi.wallpaperFit
+                                    },
+                                    icon = OpenDashIcons.Edit,
+                                    variant = BtnVariant.Ghost,
+                                    size = BtnSize.Sm,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                OpenDashBtn(
+                                    "Remove",
+                                    onClick = { dashViewModel.clearWallpaper() },
+                                    icon = OpenDashIcons.X,
+                                    variant = BtnVariant.Ghost,
+                                    size = BtnSize.Sm,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
                     }
-                    if (dashUi.wallpaperPath != null) {
-                        OpenDashBtn(
-                            "Edit current",
-                            onClick = {
-                                pendingWallpaperUri = null
-                                pendingWallpaperPreview = wallpaperPreview
-                                cropX = dashUi.wallpaperCropX
-                                cropY = dashUi.wallpaperCropY
-                                fitMode = dashUi.wallpaperFit
-                            },
-                            icon = OpenDashIcons.Edit,
-                            variant = BtnVariant.Ghost,
-                            size = BtnSize.Sm,
-                            modifier = Modifier.weight(1f),
-                        )
-                        OpenDashBtn(
-                            "Remove",
-                            onClick = { dashViewModel.clearWallpaper() },
-                            icon = OpenDashIcons.X,
-                            variant = BtnVariant.Ghost,
-                            size = BtnSize.Sm,
-                            modifier = Modifier.weight(1f),
-                        )
+                }
+            }
+            if (pendingWallpaperPreview == null) {
+                Spacer(Modifier.height(14.dp))
+                SettingsDivider(Modifier.padding(horizontal = 6.dp))
+                Spacer(Modifier.height(14.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 13.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SettingsIconBubble(OpenDashIcons.Clock, modifier = Modifier.size(42.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Column {
+                            Text("Slideshow rotation", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
+                            Text(
+                                when (slideshowInterval) {
+                                    60 -> "Every minute"
+                                    300 -> "Every 5 minutes"
+                                    600 -> "Every 10 minutes"
+                                    else -> "Off"
+                                },
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        listOf(0 to "Off", 60 to "1m", 300 to "5m", 600 to "10m").forEach { (sec, label) ->
+                            val active = slideshowInterval == sec
+                            Text(
+                                label,
+                                color = if (active) MaterialTheme.colorScheme.onPrimaryContainer
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                                fontFamily = GeistFamily,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (active) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surfaceContainerHigh
+                                    )
+                                    .clickable {
+                                        slideshowInterval = sec
+                                        dashViewModel.setWallpaperSlideshowInterval(sec)
+                                    }
+                                    .padding(vertical = 10.dp),
+                            )
+                        }
                     }
                 }
             }
         }
 
-        SectionLabel("Voice & guidance")
-        SettingsGroup(padding = 14.dp) {
-            OpenDashSegmented(listOf("Off", "Chime", "Full TTS"), voice, {
-                voiceManager.setMode(when (it) {
-                    "Off"      -> com.example.opendash.dash.nav.VoiceMode.OFF
-                    "Full TTS" -> com.example.opendash.dash.nav.VoiceMode.FULL
-                    else       -> com.example.opendash.dash.nav.VoiceMode.CHIME
-                })
-            }, Modifier.fillMaxWidth())
-        }
-
-        SectionLabel("Units")
-        SettingsGroup(padding = 14.dp) {
-            OpenDashSegmented(listOf("Kilometres", "Miles"), units, { units = it }, Modifier.fillMaxWidth())
-        }
-
-        SectionLabel("Currency")
-        SettingsGroup(padding = 6.dp) {
-            Box(Modifier.fillMaxWidth()) {
-                SettingRow(
-                    icon = OpenDashIcons.Chart,
-                    title = selectedCurrency.code,
-                    sub = "${selectedCurrency.displayName} · ${selectedCurrency.symbol}",
-                    control = {
-                        Icon(
-                            OpenDashIcons.ChevronRight,
-                            contentDescription = "Choose currency",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
+        SectionLabel("Units & Currency")
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            var unitsMenuExpanded by remember { mutableStateOf(false) }
+            Box(Modifier.weight(1f)) {
+                Surface(
+                    onClick = { unitsMenuExpanded = true },
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            SettingsIconBubble(OpenDashIcons.Units, modifier = Modifier.size(32.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Units",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = GeistFamily
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            units,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.5.sp,
+                            fontFamily = GeistFamily
                         )
-                    },
-                    last = true,
+                    }
+                }
+                DropdownMenu(
+                    expanded = unitsMenuExpanded,
+                    onDismissRequest = { unitsMenuExpanded = false },
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    listOf("Kilometres", "Miles").forEach { option ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    option,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = GeistFamily,
+                                )
+                            },
+                            trailingIcon = if (option == units) {
+                                { Icon(OpenDashIcons.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                            } else null,
+                            onClick = {
+                                units = option
+                                unitsMenuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            var currencyMenuExpanded by remember { mutableStateOf(false) }
+            Box(Modifier.weight(1f)) {
+                Surface(
                     onClick = { currencyMenuExpanded = true },
-                )
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            SettingsIconBubble(OpenDashIcons.Chart, modifier = Modifier.size(32.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Currency",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = GeistFamily
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            selectedCurrency.code,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.5.sp,
+                            fontFamily = GeistFamily,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
                 DropdownMenu(
                     expanded = currencyMenuExpanded,
                     onDismissRequest = { currencyMenuExpanded = false },
@@ -611,12 +726,41 @@ fun SettingsScreen(
             }
         }
 
-        Spacer(Modifier.height(22.dp))
 
+
+        Spacer(Modifier.height(24.dp))
+        Row(
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Terms & Conditions",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Medium,
+                fontFamily = GeistFamily,
+                modifier = Modifier.clickable { page = MorePage.TERMS }
+            )
+            Text(
+                text = "•",
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                fontSize = 12.5.sp
+            )
+            Text(
+                text = "License",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Medium,
+                fontFamily = GeistFamily,
+                modifier = Modifier.clickable { page = MorePage.LICENSE }
+            )
+        }
+        Spacer(Modifier.height(8.dp))
         Text(
             "OpenDash v${BuildConfig.VERSION_NAME} · local only",
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, fontFamily = GeistMonoFamily,
-            modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 10.dp),
+            modifier = Modifier.align(Alignment.CenterHorizontally),
         )
     }
 }
@@ -688,10 +832,6 @@ private fun MoreRow(
 @Composable
 private fun MoreInformationPage(page: MorePage, onBack: () -> Unit) {
     val sections = when (page) {
-        MorePage.ABOUT -> listOf(
-            "OpenDash v${BuildConfig.VERSION_NAME}" to "Open-source navigation, ride management, dash wallpapers, media cards, and call controls for compatible Tripper displays.",
-            "Privacy" to "OpenDash works locally by default. Dash credentials use encrypted preferences and wallpaper media stays in app-private storage.",
-        )
         MorePage.HELP -> listOf(
             "Connect to Tripper Dash" to "Turn on the bike, choose Connect to dash, select the RE_* network, and confirm the exact SSID before it is saved.",
             "Navigation" to "Share a destination from Google Maps, review the route, start navigation, and connect the dash. Active navigation keeps its existing projection behavior.",
@@ -707,23 +847,6 @@ private fun MoreInformationPage(page: MorePage, onBack: () -> Unit) {
             "OpenDash" to "Distributed under the license included with the source repository.",
             "Open-source components" to "OpenDash uses Kotlin, Jetpack Compose, MapLibre, OpenFreeMap, OSRM, AndroidX, and other libraries under their respective licenses.",
             "Source" to "github.com/subtlesayak/open-dash",
-        )
-        MorePage.CHANGELOG -> listOf(
-            "1.3 stable" to listOf(
-                "Material 3 Expressive UI refresh across the app.",
-                "Added Dynamic Wallpaper theming as the first theme option.",
-                "Added Auto Day/Night black-and-white theme as the second theme option.",
-                "Kept motorcycle theme palettes available after the dynamic and auto modes.",
-                "Improved app-wide theme contrast so Garage, dialogs, cards, buttons, and spare-part rows stay readable across light, dynamic, and motorcycle themes.",
-                "Active vehicle selection with vehicle-specific garage and expense data.",
-                "New expenses now default to the current selected vehicle without an editable vehicle field.",
-                "Redesigned Garage with editable odometer and average mileage from the latest five fill-ups.",
-                "Spare-part details, interval editing, history, and service logging.",
-                "Fuel entries no longer delete when tapped.",
-                "Monthly and all-time expense filtering and sharing.",
-                "Dash wallpaper video decoding capped at 8 FPS.",
-                "Improved navigation transitions and general UI fixes.",
-            ).joinToString("\n") { "- $it" },
         )
         else -> emptyList()
     }

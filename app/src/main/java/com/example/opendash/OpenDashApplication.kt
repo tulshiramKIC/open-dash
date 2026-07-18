@@ -2,6 +2,7 @@ package com.example.opendash
 
 import android.app.Application
 import com.example.opendash.data.VehicleStore
+import com.example.opendash.data.OfflineMaps
 import android.content.ComponentName
 import android.os.Build
 import android.service.notification.NotificationListenerService
@@ -12,6 +13,7 @@ class OpenDashApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         VehicleStore.init(this)
+        OfflineMaps.init(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && MediaInfoProvider.isAccessGranted(this)) {
             runCatching {
                 NotificationListenerService.requestRebind(

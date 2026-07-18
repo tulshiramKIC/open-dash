@@ -16,7 +16,7 @@ import java.util.UUID
  * synchronous; callers run them off the main thread.
  */
 class OpenDashDb private constructor(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "opendash.db", null, 7) {
+    SQLiteOpenHelper(context.applicationContext, "opendash.db", null, 8) {
 
     companion object {
         @Volatile private var instance: OpenDashDb? = null
@@ -52,6 +52,15 @@ class OpenDashDb private constructor(context: Context) :
                  amount REAL NOT NULL,
                  note TEXT NOT NULL DEFAULT '',
                  vehicle_id TEXT NOT NULL DEFAULT 'default')"""
+
+        private const val CREATE_OFFLINE_PLACE =
+            """CREATE TABLE IF NOT EXISTS offline_place(
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 region TEXT NOT NULL,
+                 name TEXT NOT NULL,
+                 address TEXT NOT NULL DEFAULT '',
+                 lat REAL NOT NULL,
+                 lng REAL NOT NULL)"""
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -93,6 +102,8 @@ class OpenDashDb private constructor(context: Context) :
         )
         db.execSQL(CREATE_RIDE)
         db.execSQL(CREATE_EXPENSE)
+        db.execSQL(CREATE_OFFLINE_PLACE)
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_offline_place_name ON offline_place(name COLLATE NOCASE)")
         seedMaintenance(db)
     }
 
@@ -140,6 +151,10 @@ class OpenDashDb private constructor(context: Context) :
             db.execSQL("UPDATE maintenance_item SET interval_km=10000 WHERE vehicle_id='default' AND sid IN ('seed-front-tyre','seed-rear-tyre') AND interval_km=15000")
             db.execSQL("UPDATE maintenance_item SET name='Drive chain', interval_km=500 WHERE vehicle_id='default' AND sid='seed-chain' AND interval_km=15000")
         }
+        if (oldVersion < 8) {
+            db.execSQL(CREATE_OFFLINE_PLACE)
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_offline_place_name ON offline_place(name COLLATE NOCASE)")
+        }
     }
 
     private fun seedMaintenance(db: SQLiteDatabase) {
@@ -147,9 +162,6 @@ class OpenDashDb private constructor(context: Context) :
     }
 
     private fun seedMaintenanceForVehicle(db: SQLiteDatabase, vehicleId: String) {
-        // The bundled schedule is sourced specifically for the default Himalayan 450.
-        // Other vehicles remain empty until the rider adds model-appropriate intervals.
-        if (vehicleId != VehicleStore.DEFAULT_VEHICLE_ID) return
         val now = System.currentTimeMillis()
         // DETERMINISTIC sids: every fresh install seeds the same ids, so when two devices
         // sync these dedupe (upsert by sid) instead of producing duplicates.
@@ -383,4 +395,94 @@ class OpenDashDb private constructor(context: Context) :
 
     fun deleteRideBySid(sid: String) =
         writableDatabase.delete("ride", "sid=?", arrayOf(sid))
+
+    // ── Offline place index ────────────────────────────────────────────────
+
+    data class OfflinePlace(
+        val region: String,
+        val name: String,
+        val address: String,
+        val lat: Double,
+        val lng: Double,
+    )
+
+    /**
+     * Bulk-insert places fetched from Overpass for an offline region.
+     * Existing rows for the same [region] are replaced to avoid duplicates on re-download.
+     */
+    fun insertOfflinePlaces(places: List<OfflinePlace>) {
+        if (places.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val regionName = places.first().region
+            db.delete("offline_place", "region=?", arrayOf(regionName))
+            for (p in places) {
+                db.insert("offline_place", null, ContentValues().apply {
+                    put("region", p.region)
+                    put("name", p.name)
+                    put("address", p.address)
+                    put("lat", p.lat)
+                    put("lng", p.lng)
+                })
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /**
+     * Prefix-search offline places by [query]. Returns up to [limit] results ordered by
+     * name length (shorter names = more precise match come first).
+     */
+    fun searchOfflinePlaces(query: String, limit: Int = 8): List<OfflinePlace> {
+        if (query.isBlank()) return emptyList()
+        val pattern = "${query.trim()}%"
+        val out = ArrayList<OfflinePlace>()
+        readableDatabase.rawQuery(
+            "SELECT region,name,address,lat,lng FROM offline_place " +
+                "WHERE name LIKE ? ESCAPE '\\' " +
+                "ORDER BY length(name) ASC LIMIT ?",
+            arrayOf(pattern, limit.toString()),
+        ).use { c ->
+            while (c.moveToNext()) out.add(
+                OfflinePlace(
+                    region = c.getString(0), name = c.getString(1),
+                    address = c.getString(2), lat = c.getDouble(3), lng = c.getDouble(4),
+                )
+            )
+        }
+        // Also search mid-word (name LIKE '%query%') to catch partial matches.
+        if (out.size < limit) {
+            val midPattern = "%${query.trim()}%"
+            readableDatabase.rawQuery(
+                "SELECT region,name,address,lat,lng FROM offline_place " +
+                    "WHERE name LIKE ? ESCAPE '\\' AND name NOT LIKE ? ESCAPE '\\' " +
+                    "ORDER BY length(name) ASC LIMIT ?",
+                arrayOf(midPattern, pattern, (limit - out.size).toString()),
+            ).use { c ->
+                while (c.moveToNext()) out.add(
+                    OfflinePlace(
+                        region = c.getString(0), name = c.getString(1),
+                        address = c.getString(2), lat = c.getDouble(3), lng = c.getDouble(4),
+                    )
+                )
+            }
+        }
+        return out
+    }
+
+    /** Remove all indexed places for a deleted offline region. */
+    fun deleteOfflinePlacesByRegion(region: String) =
+        writableDatabase.delete("offline_place", "region=?", arrayOf(region))
+
+    /** Count how many places are indexed for a given region. */
+    fun countOfflinePlaces(region: String): Int =
+        readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM offline_place WHERE region=?",
+            arrayOf(region)
+        ).use { c ->
+            if (c.moveToFirst()) c.getInt(0) else 0
+        }
 }

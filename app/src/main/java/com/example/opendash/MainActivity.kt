@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.activity.SystemBarStyle
 import com.example.opendash.data.SyncRepository
 import com.example.opendash.ui.navigation.AppNavigation
 import com.example.opendash.ui.theme.OpenDashTheme
@@ -20,7 +21,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+        )
+
 
         // The app runs fully local: on-device SQLite is the source of truth and there is no
         // sign-in. SyncRepository is used here only to read maintenance state for reminders.

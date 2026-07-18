@@ -43,6 +43,8 @@ class MapRenderer(private val tiles: TileProvider) {
         val etaSecondary: String? = null,  // smaller line, e.g. "18 km · 13:32"
         val gpsWeak: Boolean = false,
         val gpsLost: Boolean = false,
+        val showMediaOverlay: Boolean = false,
+        val gpsTopOffset: Float = 14f,
     )
 
     private val bgColor   = Color.rgb(229, 227, 223) // Google Maps land colour, behind missing tiles
@@ -248,7 +250,7 @@ class MapRenderer(private val tiles: TileProvider) {
             val textHeight = font.descent - font.ascent
             val pillWidth = gpsPillText.measureText(label) + 28f
             val center = w / 2f
-            val top = 14f
+            val top = f.gpsTopOffset
             val bottom = top + 12f + textHeight
             pillRect.set(center - pillWidth / 2f, top, center + pillWidth / 2f, bottom)
             val radius = (bottom - top) / 2f

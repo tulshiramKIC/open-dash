@@ -11,11 +11,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -42,10 +44,12 @@ sealed class Screen(val route: String) {
     object Home     : Screen("home")
     object Expenses : Screen("expenses")
     object Route    : Screen("route")
+    object Trails   : Screen("trails")
     object Dash     : Screen("dash")
     object Garage   : Screen("garage")
     object Rides    : Screen("rides")
     object Settings : Screen("settings")
+    object OfflineMaps : Screen("offline_maps")
 }
 
 private data class NavTab(val screen: Screen, val icon: ImageVector, val label: String)
@@ -53,6 +57,7 @@ private data class NavTab(val screen: Screen, val icon: ImageVector, val label: 
 private val bottomTabs = listOf(
     NavTab(Screen.Home,   OpenDashIcons.Home,    "Home"),
     NavTab(Screen.Route,  OpenDashIcons.Navi,    "Navigate"),
+    NavTab(Screen.Trails, OpenDashIcons.Pin,     "Trails"),
     NavTab(Screen.Expenses, OpenDashIcons.Chart, "Expenses"),
     NavTab(Screen.Garage, OpenDashIcons.Motor,  "Garage"),
     NavTab(Screen.Settings, OpenDashIcons.Gear, "More"),
@@ -72,7 +77,13 @@ fun AppNavigation(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
-    val showBottomNav = currentRoute in shellRoutes
+    val customTrailsEnabled by com.example.opendash.data.NavSettings.customTrailsEnabled.collectAsState()
+    val activeBottomTabs = remember(customTrailsEnabled) {
+        if (customTrailsEnabled) bottomTabs
+        else bottomTabs.filter { it.screen != Screen.Trails }
+    }
+
+    val showBottomNav = currentRoute in shellRoutes && currentRoute != Screen.Route.route
     // No tab-swipe on the Route tab — horizontal drags there pan the map.
     val canSwipeBottomTabs = currentRoute in bottomRoutes && currentRoute != Screen.Route.route
 
@@ -129,10 +140,11 @@ fun AppNavigation(
         navigateHome()
     }
 
-    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+    Box(Modifier.fillMaxSize()) {
         Box(
             Modifier
-                .weight(1f)
+                .fillMaxSize()
+                .statusBarsPadding()
                 .pointerInput(canSwipeBottomTabs, currentRoute) {
                     if (!canSwipeBottomTabs) return@pointerInput
                     var dragX = 0f
@@ -140,10 +152,11 @@ fun AppNavigation(
                         onDragStart = { dragX = 0f },
                         onHorizontalDrag = { _, amount -> dragX += amount },
                         onDragEnd = {
-                            val currentIndex = bottomRoutes.indexOf(currentRoute)
+                            val activeRoutes = activeBottomTabs.map { it.screen.route }
+                            val currentIndex = activeRoutes.indexOf(currentRoute)
                             if (currentIndex == -1 || kotlin.math.abs(dragX) < 80f) return@detectHorizontalDragGestures
                             val nextIndex = if (dragX < 0) currentIndex + 1 else currentIndex - 1
-                            val next = bottomTabs.getOrNull(nextIndex)?.screen ?: return@detectHorizontalDragGestures
+                            val next = activeBottomTabs.getOrNull(nextIndex)?.screen ?: return@detectHorizontalDragGestures
                             navigateTopLevel(next)
                         },
                     )
@@ -189,6 +202,24 @@ fun AppNavigation(
                     ExpensesScreen()
                 }
 
+                composable(Screen.Trails.route) {
+                    TrailsScreen(
+                        routeViewModel = routeViewModel,
+                        onNavigateToRoute = {
+                            navController.navigate(Screen.Route.route) { launchSingleTop = true }
+                        },
+                        onStartRecording = {
+                            routeViewModel.prepareRecordingRoute()
+                            navController.navigate(Screen.Route.route) { launchSingleTop = true }
+                        },
+                        isActiveNavigation = routeState.navigating,
+                        onExitNavigation = {
+                            routeViewModel.clear()
+                            dashViewModel.exitNavigation()
+                        },
+                    )
+                }
+
                 composable(Screen.Route.route) {
                     RouteScreen(
                         routeViewModel = routeViewModel,
@@ -198,6 +229,8 @@ fun AppNavigation(
                                 name = destName,
                                 lat  = routeState.destination?.lat,
                                 lng  = routeState.destination?.lng,
+                                initialRoute = routeState.route,
+                                initialAlternates = routeState.routes,
                             )
                             // Start navigation: open the dash view. DashScreen owns the
                             // connect — it requests the runtime permissions first (starting
@@ -231,15 +264,41 @@ fun AppNavigation(
                         onConnChange = { appViewModel.setConn(it) },
                         dashViewModel = dashViewModel,
                         onBack = { navController.navigate(Screen.Home.route) { launchSingleTop = true } },
+                        onOpenOfflineMaps = { navController.navigate(Screen.OfflineMaps.route) },
                     )
+                }
+
+                composable(Screen.OfflineMaps.route) {
+                    OfflineMapsScreen(onBack = { navController.popBackStack() })
                 }
             }
         }
 
         if (showBottomNav) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .height(110.dp)
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                MaterialTheme.colorScheme.background.copy(alpha = 0.82f),
+                                MaterialTheme.colorScheme.background
+                            )
+                        )
+                    )
+            )
+
             OpenDashBottomNav(
                 currentRoute = activeBottomRoute(currentRoute),
+                activeTabs = activeBottomTabs,
                 onNavSelect = { screen -> navigateTopLevel(screen) },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 10.dp)
             )
         }
     }
@@ -265,54 +324,38 @@ private fun navOrderIndex(route: String?): Int = when (route) {
 @Composable
 private fun OpenDashBottomNav(
     currentRoute: String?,
+    activeTabs: List<NavTab>,
     onNavSelect: (Screen) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Box(
-        modifier = Modifier
+    Row(
+        modifier = modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
-            .background(Bg1),
+            .height(60.dp)
+            .clip(CircleShape)
+            .background(Bg1.copy(alpha = 0.85f))
+            .border(1.dp, Line2.copy(alpha = 0.5f), CircleShape)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 6.dp)
-                .height(64.dp)
-                .clip(RoundedCornerShape(21.dp))
-                .background(Bg1)
-                .border(1.dp, Line2, RoundedCornerShape(21.dp))
-                .padding(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            bottomTabs.forEach { tab ->
-                val active = currentRoute == tab.screen.route
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(if (active) GoldTint else Color.Transparent)
-                        .clickable { onNavSelect(tab.screen) },
-                ) {
-                    Icon(
-                        tab.icon,
-                        contentDescription = tab.label,
-                        tint = if (active) GoldBright else TextLo,
-                        modifier = Modifier.size(21.dp),
-                    )
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        tab.label,
-                        color = if (active) GoldBright else TextLo,
-                        fontSize = 10.sp,
-                        lineHeight = 12.sp,
-                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
-                        fontFamily = GeistFamily,
-                        maxLines = 1,
-                    )
-                }
+        activeTabs.forEach { tab ->
+            val active = currentRoute == tab.screen.route
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(CircleShape)
+                    .background(if (active) GoldTint.copy(alpha = 0.9f) else Color.Transparent)
+                    .clickable { onNavSelect(tab.screen) },
+            ) {
+                Icon(
+                    tab.icon,
+                    contentDescription = tab.label,
+                    tint = if (active) GoldBright else TextLo,
+                    modifier = Modifier.size(24.dp),
+                )
             }
         }
     }

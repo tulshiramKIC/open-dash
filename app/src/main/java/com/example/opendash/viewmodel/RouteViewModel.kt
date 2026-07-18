@@ -11,6 +11,9 @@ import com.example.opendash.data.SharedLocation
 import com.example.opendash.dash.nav.GeoPoint
 import com.example.opendash.dash.nav.Route
 import com.example.opendash.dash.nav.Router
+import com.example.opendash.dash.nav.Maneuver
+import com.example.opendash.dash.nav.ManeuverType
+import android.net.Uri
 import com.example.opendash.util.LocationParser
 import com.example.opendash.util.DebugLog
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +27,7 @@ import java.util.Locale
 
 data class RouteState(
     val destination: SharedLocation? = null,
+    val stops: List<SharedLocation> = emptyList(),
     val isResolving: Boolean = false,
     val pendingNavigate: Boolean = false,
     // Real routing results
@@ -39,6 +43,11 @@ data class RouteState(
     val searchQuery: String = "",
     val searchResults: List<com.example.opendash.data.Place> = emptyList(),
     val searching: Boolean = false,
+    val isRecordingRoute: Boolean = false,
+    val recordedPoints: List<GeoPoint> = emptyList(),
+    val isPreparingRouteRecording: Boolean = false,
+    val recordingTrailName: String = "",
+    val navigating: Boolean = false,
 )
 
 class RouteViewModel(app: Application) : AndroidViewModel(app) {
@@ -48,6 +57,13 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
 
     private val lm = app.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val repo = com.example.opendash.data.SyncRepository.get(app)
+
+    private var recordingStartMillis: Long = 0L
+
+    private val gpsListener = android.location.LocationListener { loc ->
+        if (loc.hasAccuracy() && loc.accuracy > 10f) return@LocationListener
+        addRecordedPoint(loc.latitude, loc.longitude)
+    }
 
     private val _saved = MutableStateFlow<List<com.example.opendash.data.SavedLocation>>(emptyList())
     /** Saved destinations the rider can tap to load + navigate again. */
@@ -68,14 +84,41 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
         val d = _state.value.destination ?: return
         val lat = d.lat ?: return
         val lng = d.lng ?: return
-        viewModelScope.launch { withContext(Dispatchers.IO) { repo.addSaved(name.ifBlank { d.name }, lat, lng, note) } }
+        val routes = _state.value.routes
+        val selectedIdx = _state.value.selectedRouteIndex
+        viewModelScope.launch {
+            val sid = withContext(Dispatchers.IO) {
+                repo.addSaved(name.ifBlank { d.name }, lat, lng, note)
+            }
+            if (routes.isNotEmpty()) {
+                withContext(Dispatchers.IO) {
+                    try {
+                        val file = java.io.File(getApplication<Application>().filesDir, "route_${sid}.json")
+                        file.writeText(com.example.opendash.dash.nav.Route.routesToJson(routes, selectedIdx))
+                        DebugLog.i(TAG) { "Saved routes list cache for $sid" }
+                    } catch (e: Exception) {
+                        DebugLog.w(TAG) { "Failed to save route cache: ${e.message}" }
+                    }
+                }
+            }
+        }
     }
 
     fun renameSaved(loc: com.example.opendash.data.SavedLocation, name: String, note: String) =
         viewModelScope.launch { withContext(Dispatchers.IO) { repo.renameSaved(loc, name, note) } }
 
     fun deleteSaved(loc: com.example.opendash.data.SavedLocation) =
-        viewModelScope.launch { withContext(Dispatchers.IO) { repo.deleteSaved(loc) } }
+        viewModelScope.launch { 
+            withContext(Dispatchers.IO) { 
+                repo.deleteSaved(loc)
+                try {
+                    val file = java.io.File(getApplication<Application>().filesDir, "route_${loc.sid}.json")
+                    if (file.exists()) file.delete()
+                } catch (e: Exception) {
+                    // Ignore cache delete error
+                }
+            } 
+        }
 
     /** Load a saved destination into the route preview (compute route; stay on the page). */
     fun selectSaved(loc: com.example.opendash.data.SavedLocation) {
@@ -84,7 +127,30 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
             isResolving = false,
             pendingNavigate = false,
         )
-        computeRoute(loc.lat, loc.lng)
+        // Try to load cached route from disk first (useful when offline)
+        val cacheFile = java.io.File(getApplication<Application>().filesDir, "route_${loc.sid}.json")
+        if (cacheFile.exists()) {
+            try {
+                val json = cacheFile.readText()
+                val (routes, selectedIdx) = com.example.opendash.dash.nav.Route.routesFromJson(json)
+                val route = routes.getOrNull(selectedIdx) ?: routes.firstOrNull()
+                if (route != null) {
+                    _state.value = _state.value.copy(
+                        route = route,
+                        routes = routes,
+                        selectedRouteIndex = selectedIdx,
+                        distanceText = fmtKm(route.totalMeters),
+                        durationText = fmtDuration(route.totalSeconds),
+                        etaText = fmtEta(route.totalSeconds),
+                    )
+                    DebugLog.i(TAG) { "Loaded route cache with ${routes.size} routes for ${loc.name}" }
+                    return
+                }
+            } catch (e: Exception) {
+                DebugLog.w(TAG) { "Failed to load route cache: ${e.message}" }
+            }
+        }
+        computeRoute()
     }
 
     fun handleSharedText(text: String) {
@@ -95,7 +161,7 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
             pendingNavigate = true,
         )
         if (loc.lat != null && loc.lng != null) {
-            computeRoute(loc.lat, loc.lng)
+            computeRoute()
         } else if (loc.url != null) {
             viewModelScope.launch {
                 val (urlCoords, resolvedName) = LocationParser.resolve(loc.url)
@@ -112,7 +178,7 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
                     name = name, lat = coords?.first, lng = coords?.second, needsExpansion = false,
                 )
                 _state.value = _state.value.copy(destination = resolved, isResolving = false)
-                if (coords != null) computeRoute(coords.first, coords.second)
+                if (coords != null) computeRoute()
                 else DebugLog.w(TAG) { "No coords for '$name' (url+geocode both empty)" }
             }
         }
@@ -146,33 +212,56 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(travelMode = mode)
         Router.currentMode = mode   // dash-side reroutes pick this up too
         val d = _state.value.destination
-        if (d?.lat != null && d.lng != null) computeRoute(d.lat, d.lng)
+        if (d?.lat != null && d.lng != null) computeRoute()
     }
 
     @SuppressLint("MissingPermission")
-    private fun computeRoute(destLat: Double, destLng: Double) {
+    private fun computeRoute() {
+        val dest = _state.value.destination ?: return
+        val destLat = dest.lat ?: return
+        val destLng = dest.lng ?: return
         val origin = runCatching {
             lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
         }.getOrNull() ?: return
 
         _state.value = _state.value.copy(routing = true)
+        val stopsList = _state.value.stops.mapNotNull {
+            if (it.lat != null && it.lng != null) GeoPoint(it.lat, it.lng) else null
+        }
         viewModelScope.launch {
             val list = Router.routes(
                 GeoPoint(origin.latitude, origin.longitude),
                 GeoPoint(destLat, destLng),
-                alternatives = true,
+                stops = stopsList,
+                alternatives = stopsList.isEmpty(), // alternatives only when there are no intermediate stops
             )
             val primary = list.firstOrNull()
-            _state.value = if (primary != null) _state.value.copy(
-                route = primary,
-                routes = list,
-                selectedRouteIndex = 0,
-                routing = false,
-                distanceText = fmtKm(primary.totalMeters),
-                durationText = fmtDuration(primary.totalSeconds),
-                etaText = fmtEta(primary.totalSeconds),
-            ) else _state.value.copy(routing = false, routes = emptyList())
+            if (primary != null) {
+                _state.value = _state.value.copy(
+                    route = primary,
+                    routes = list,
+                    selectedRouteIndex = 0,
+                    routing = false,
+                    distanceText = fmtKm(primary.totalMeters),
+                    durationText = fmtDuration(primary.totalSeconds),
+                    etaText = fmtEta(primary.totalSeconds),
+                )
+            } else {
+                // Offline fallback: calculate straight-line distance
+                val distMeters = GeoPoint.distMeters(
+                    GeoPoint(origin.latitude, origin.longitude),
+                    GeoPoint(destLat, destLng)
+                )
+                _state.value = _state.value.copy(
+                    route = null,
+                    routes = emptyList(),
+                    routing = false,
+                    distanceText = "~" + fmtKm(distMeters) + " (direct)",
+                    durationText = "Offline mode",
+                    etaText = null
+                )
+            }
         }
     }
 
@@ -211,7 +300,7 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
             kotlinx.coroutines.delay(300)   // debounce keystrokes
             _state.value = _state.value.copy(searching = true)
             val origin = liveOrigin ?: lastKnownOrigin()
-            var results = com.example.opendash.data.PlaceSearch.suggest(q, origin?.first, origin?.second, searchSession)
+            var results = com.example.opendash.data.PlaceSearch.suggest(q, origin?.first, origin?.second, searchSession, getApplication())
             // Fallback: no Mapbox token / offline → single best match from the device geocoder.
             if (results.isEmpty()) {
                 geocode(q)?.let { (lat, lng) ->
@@ -225,8 +314,8 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Pick a search result as the destination and compute its route. */
-    fun chooseSearchResult(place: com.example.opendash.data.Place) {
+    /** Pick a search result as the destination or stop, and compute its route. */
+    fun chooseSearchResult(place: com.example.opendash.data.Place, stopIndex: Int = -1) {
         searchJob?.cancel()
         viewModelScope.launch {
             // Suggestions have no coordinates — resolve via their provider; geocoder hits already do.
@@ -238,14 +327,30 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val (lat, lng) = coords
-            _state.value = _state.value.copy(
-                destination = SharedLocation(name = place.name, lat = lat, lng = lng),
-                isResolving = false,
-                searchQuery = "",
-                searchResults = emptyList(),
-                searching = false,
-            )
-            computeRoute(lat, lng)
+            val targetLoc = SharedLocation(name = place.name, lat = lat, lng = lng)
+            if (stopIndex >= 0) {
+                val currentStops = _state.value.stops.toMutableList()
+                if (stopIndex in currentStops.indices) {
+                    currentStops[stopIndex] = targetLoc
+                } else {
+                    currentStops.add(targetLoc)
+                }
+                _state.value = _state.value.copy(
+                    stops = currentStops,
+                    searchQuery = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                )
+            } else {
+                _state.value = _state.value.copy(
+                    destination = targetLoc,
+                    isResolving = false,
+                    searchQuery = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                )
+            }
+            computeRoute()
         }
     }
 
@@ -258,7 +363,318 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
     }.getOrNull()
 
     fun onNavigated() { _state.value = _state.value.copy(pendingNavigate = false) }
+    fun removeStop(index: Int) {
+        val currentStops = _state.value.stops.toMutableList()
+        if (index in currentStops.indices) {
+            currentStops.removeAt(index)
+            _state.value = _state.value.copy(stops = currentStops)
+            computeRoute()
+        }
+    }
+
+    fun addStop(loc: SharedLocation) {
+        val currentStops = _state.value.stops.toMutableList()
+        currentStops.add(loc)
+        _state.value = _state.value.copy(stops = currentStops)
+        computeRoute()
+    }
+
+    fun addBlankStop() {
+        val currentStops = _state.value.stops.toMutableList()
+        currentStops.add(SharedLocation(name = ""))
+        _state.value = _state.value.copy(stops = currentStops)
+    }
+
+    fun moveWaypoint(fromIndex: Int, toIndex: Int) {
+        val currentStops = _state.value.stops.toMutableList()
+        val dest = _state.value.destination ?: return
+        val list = currentStops + listOf(dest)
+        if (fromIndex in list.indices && toIndex in list.indices) {
+            val newList = list.toMutableList()
+            val temp = newList[fromIndex]
+            newList[fromIndex] = newList[toIndex]
+            newList[toIndex] = temp
+            
+            // Last item is the new destination, others are stops
+            val newDest = newList.last()
+            val newStops = newList.dropLast(1)
+            _state.value = _state.value.copy(
+                destination = newDest,
+                stops = newStops
+            )
+            computeRoute()
+        }
+    }
+
+    fun startNavigation() {
+        _state.value = _state.value.copy(navigating = true)
+    }
+
     fun clear() { _state.value = RouteState() }
+
+    fun prepareRecordingRoute() {
+        _state.value = _state.value.copy(isPreparingRouteRecording = true)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startRecordingRoute(name: String) {
+        _state.value = _state.value.copy(
+            isPreparingRouteRecording = false,
+            isRecordingRoute = true,
+            recordedPoints = emptyList(),
+            recordingTrailName = name
+        )
+        recordingStartMillis = System.currentTimeMillis()
+        com.example.opendash.dash.DashKeepAliveService.start(getApplication())
+        runCatching {
+            lm.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                500L,   // every 500ms for high-resolution trail
+                0f,
+                gpsListener,
+                android.os.Looper.getMainLooper()
+            )
+        }
+    }
+
+    fun addRecordedPoint(lat: Double, lng: Double) {
+        if (!_state.value.isRecordingRoute) return
+        val currentPoints = _state.value.recordedPoints
+        val newPoint = GeoPoint(lat, lng)
+        if (currentPoints.isNotEmpty()) {
+            val last = currentPoints.last()
+            val results = FloatArray(1)
+            android.location.Location.distanceBetween(last.lat, last.lng, lat, lng, results)
+            if (results[0] < 0.5) return // Skip if moved less than 0.5 metres (GPS noise when stopped)
+        }
+        _state.value = _state.value.copy(recordedPoints = currentPoints + newPoint)
+    }
+
+    fun stopRecordingRoute() {
+        _state.value = _state.value.copy(isRecordingRoute = false)
+        runCatching { lm.removeUpdates(gpsListener) }
+        com.example.opendash.dash.DashKeepAliveService.stop(getApplication())
+    }
+
+    fun saveRecordedRoute(name: String) {
+        val points = _state.value.recordedPoints
+        if (points.size < 2) return
+        _state.value = _state.value.copy(isResolving = true)
+        viewModelScope.launch {
+            val destinationName = name.ifBlank { "Recorded Trail" }
+            val first = points.first()
+            val lastPt = points.last()
+            
+            val sid = withContext(Dispatchers.IO) {
+                repo.addSaved(destinationName, lastPt.lat, lastPt.lng, "Recorded custom trail route")
+            }
+            
+            // Build the Route object and write to route_${sid}.json
+            withContext(Dispatchers.IO) {
+                try {
+                    val cumulative = DoubleArray(points.size)
+                    var totalMeters = 0.0
+                    cumulative[0] = 0.0
+                    for (i in 1 until points.size) {
+                        val p1 = points[i - 1]
+                        val p2 = points[i]
+                        val results = FloatArray(1)
+                        android.location.Location.distanceBetween(p1.lat, p1.lng, p2.lat, p2.lng, results)
+                        totalMeters += results[0]
+                        cumulative[i] = totalMeters
+                    }
+                    val elapsedSeconds = if (recordingStartMillis > 0L) {
+                        (System.currentTimeMillis() - recordingStartMillis) / 1000.0
+                    } else {
+                        0.0
+                    }
+                    val totalSeconds = if (elapsedSeconds > 5.0) elapsedSeconds else (totalMeters / 13.89)
+
+                    val maneuvers = listOf(
+                        Maneuver(
+                            type = ManeuverType.DEPART,
+                            instruction = "Start custom trail: $destinationName",
+                            location = first,
+                            cumulativeMeters = 0.0
+                        ),
+                        Maneuver(
+                            type = ManeuverType.ARRIVE,
+                            instruction = "Arrive at destination",
+                            location = lastPt,
+                            cumulativeMeters = totalMeters
+                        )
+                    )
+
+                    val route = Route(
+                        geometry = points,
+                        maneuvers = maneuvers,
+                        totalMeters = totalMeters,
+                        totalSeconds = totalSeconds,
+                        cumulative = cumulative
+                    )
+                    
+                    val file = java.io.File(getApplication<Application>().filesDir, "route_${sid}.json")
+                    file.writeText(com.example.opendash.dash.nav.Route.routesToJson(listOf(route), 0))
+                    DebugLog.i(TAG) { "Successfully saved custom recorded route cache for $sid" }
+                } catch (e: Exception) {
+                    DebugLog.w(TAG) { "Failed to save recorded route cache: ${e.message}" }
+                }
+            }
+            
+            // Done saving, reset only recording state and preserve active navigation
+            _state.value = _state.value.copy(
+                isRecordingRoute = false,
+                recordedPoints = emptyList(),
+                recordingTrailName = "",
+                isResolving = false
+            )
+        }
+    }
+
+    fun importGpxFile(context: Context, uri: Uri) {
+        _state.value = RouteState(isResolving = true)
+        viewModelScope.launch {
+            try {
+                val points = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        val pts = mutableListOf<GeoPoint>()
+                        val factory = org.xmlpull.v1.XmlPullParserFactory.newInstance()
+                        val parser = factory.newPullParser()
+                        parser.setInput(stream, "UTF-8")
+                        var eventType = parser.eventType
+                        while (eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                            if (eventType == org.xmlpull.v1.XmlPullParser.START_TAG && parser.name.lowercase() == "trkpt") {
+                                val lat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull()
+                                val lon = parser.getAttributeValue(null, "lon") ?: parser.getAttributeValue(null, "lng")
+                                val lonDouble = lon?.toDoubleOrNull()
+                                if (lat != null && lonDouble != null) {
+                                    pts.add(GeoPoint(lat, lonDouble))
+                                }
+                            }
+                            eventType = parser.next()
+                        }
+                        pts
+                    } ?: emptyList()
+                }
+
+                if (points.isEmpty()) {
+                    throw Exception("No trackpoints found in GPX file")
+                }
+
+                val routeName = getFileName(context, uri) ?: "Imported GPX"
+                val route = withContext(Dispatchers.IO) {
+                    val cumulative = DoubleArray(points.size)
+                    var totalMeters = 0.0
+                    cumulative[0] = 0.0
+                    for (i in 1 until points.size) {
+                        val p1 = points[i - 1]
+                        val p2 = points[i]
+                        val results = FloatArray(1)
+                        android.location.Location.distanceBetween(p1.lat, p1.lng, p2.lat, p2.lng, results)
+                        totalMeters += results[0]
+                        cumulative[i] = totalMeters
+                    }
+                    val averageSpeedMps = 13.89 // ~50 km/h
+                    val totalSeconds = totalMeters / averageSpeedMps
+
+                    val maneuvers = listOf(
+                        Maneuver(
+                            type = ManeuverType.DEPART,
+                            instruction = "Start GPX Route: $routeName",
+                            location = points.first(),
+                            cumulativeMeters = 0.0
+                        ),
+                        Maneuver(
+                            type = ManeuverType.ARRIVE,
+                            instruction = "Arrive at destination",
+                            location = points.last(),
+                            cumulativeMeters = totalMeters
+                        )
+                    )
+
+                    Route(
+                        geometry = points,
+                        maneuvers = maneuvers,
+                        totalMeters = totalMeters,
+                        totalSeconds = totalSeconds,
+                        cumulative = cumulative
+                    )
+                }
+
+                _state.value = RouteState(
+                    destination = SharedLocation(name = routeName, lat = points.last().lat, lng = points.last().lng),
+                    route = route,
+                    routes = listOf(route),
+                    selectedRouteIndex = 0,
+                    isResolving = false,
+                    distanceText = fmtKm(route.totalMeters),
+                    durationText = fmtDuration(route.totalSeconds),
+                    etaText = fmtEta(route.totalSeconds),
+                )
+            } catch (e: Exception) {
+                DebugLog.e(TAG, { "GPX import failed" }, e)
+                _state.value = RouteState()
+            }
+        }
+    }
+
+    private fun getFileName(context: Context, uri: Uri): String? {
+        var result: String? = null
+        if (uri.scheme == "content") {
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val idx = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx != -1) result = it.getString(idx)
+                }
+            }
+        }
+        if (result == null) {
+            result = uri.path
+            val cut = result?.lastIndexOf('/') ?: -1
+            if (cut != -1) {
+                result = result?.substring(cut + 1)
+            }
+        }
+        return result?.substringBeforeLast(".gpx")
+    }
+
+    fun exportGpx(context: Context, route: Route, name: String) {
+        viewModelScope.launch {
+            val file = withContext(Dispatchers.IO) {
+                val cleanName = name.replace(Regex("[^a-zA-Z0-9]"), "_")
+                val f = java.io.File(context.cacheDir, "${cleanName}.gpx")
+                val sb = StringBuilder()
+                sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                sb.append("<gpx version=\"1.1\" creator=\"OpenDash\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
+                sb.append("  <trk>\n")
+                sb.append("    <name>").append(name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")).append("</name>\n")
+                sb.append("    <trkseg>\n")
+                route.geometry.forEach { gp ->
+                    sb.append("      <trkpt lat=\"").append(gp.lat).append("\" lon=\"").append(gp.lng).append("\" />\n")
+                }
+                sb.append("    </trkseg>\n")
+                sb.append("  </trk>\n")
+                sb.append("</gpx>\n")
+                f.writeText(sb.toString())
+                f
+            }
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
+            val sendIntent = android.content.Intent().apply {
+                action = android.content.Intent.ACTION_SEND
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                type = "application/gpx+xml"
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val shareIntent = android.content.Intent.createChooser(sendIntent, "Export GPX Route")
+            shareIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(shareIntent)
+        }
+    }
 
     private fun fmtKm(m: Double) = "%.0f km".format(m / 1000.0)
     private fun fmtDuration(sec: Double): String {

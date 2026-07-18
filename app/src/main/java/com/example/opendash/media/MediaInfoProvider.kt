@@ -56,6 +56,16 @@ class MediaInfoProvider(private val context: Context) {
         controller != null
     }.getOrDefault(false)
 
+    fun play(): Boolean = runCatching {
+        controller?.transportControls?.play()
+        controller != null
+    }.getOrDefault(false)
+
+    fun pause(): Boolean = runCatching {
+        controller?.transportControls?.pause()
+        controller != null
+    }.getOrDefault(false)
+
     private fun bind(sessions: List<MediaController>?) {
         val next = sessions?.firstOrNull()
         if (next?.sessionToken == controller?.sessionToken) {
@@ -83,7 +93,8 @@ class MediaInfoProvider(private val context: Context) {
         val art = metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: metadata.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
-        _nowPlaying.value = NowPlaying(title, album, artist, art)
+        val isPlaying = controller?.playbackState?.state == PlaybackState.STATE_PLAYING
+        _nowPlaying.value = NowPlaying(title, album, artist, art, isPlaying)
     }
 
     companion object {
