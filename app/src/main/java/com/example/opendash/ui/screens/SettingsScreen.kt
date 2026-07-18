@@ -90,8 +90,6 @@ fun SettingsScreen(
     var slideshowInterval by remember {
         mutableStateOf(dashViewModel.getWallpaperSlideshowInterval())
     }
-    var screenOff   by remember { mutableStateOf(true) }
-    var keepAwake   by remember { mutableStateOf(true) }
     var units       by remember { mutableStateOf("Kilometres") }
     val ctx = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -213,14 +211,8 @@ fun SettingsScreen(
                 control = { SettingsToggle(autoConnect) { autoConnect = it } }, last = true)
         }
 
-        SectionLabel("During a ride")
-        SettingsGroup(padding = 6.dp) {
-            SettingRow(OpenDashIcons.Power, "Turn phone screen off", "Map keeps streaming to the dash",
-                control = { SettingsToggle(screenOff) { screenOff = it } })
-            SettingsDivider(Modifier.padding(horizontal = 6.dp))
-            SettingRow(OpenDashIcons.Dash, "Keep dash awake", "Prevent Tripper sleep",
-                control = { SettingsToggle(keepAwake) { keepAwake = it } }, last = true)
-        }
+        // No "During a ride" toggles: screen-off streaming + keep-awake ARE the product
+        // (the whole reason OpenDash exists vs the RE app) — always on, not optional.
 
         SectionLabel("Media & calls on dash")
         SettingsGroup(padding = 6.dp) {
