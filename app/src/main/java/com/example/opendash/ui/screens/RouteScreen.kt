@@ -58,6 +58,9 @@ fun RouteScreen(
     onNavigateToTrails: () -> Unit = {},
     onNavigateToDash: () -> Unit = {},
     routeViewModel: RouteViewModel = viewModel(),
+    // MUST be the SAME instance the Dash screen uses, or live nav values (route/ETA) never
+    // reach this screen. Passed down from AppNavigation.
+    dashViewModel: com.example.opendash.viewmodel.DashViewModel = viewModel(),
 ) {
     val routeState by routeViewModel.state.collectAsState()
     val customTrailsEnabled by com.example.opendash.data.NavSettings.customTrailsEnabled.collectAsState()
@@ -84,14 +87,26 @@ fun RouteScreen(
     var activeDragIdx by remember { mutableStateOf(-1) }
     var satellite by rememberSaveable { mutableStateOf(false) }
     var recenterKey by remember { mutableStateOf(0) }
+    // Active-nav camera: false = heading-up follow (driving), true = whole-route overview.
+    var navOverview by remember { mutableStateOf(false) }
     var showGroupRide by remember { mutableStateOf(false) }
+    var showIntercom by remember { mutableStateOf(false) }
     val groupRideState by com.example.opendash.data.GroupRide.state.collectAsState()
+
+    val intercomMicLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showIntercom = true
+        }
+    }
+
+
     // Measured height of the route bottom sheet — the floating map controls sit just
     // above it (a fixed offset overlaps the search card on tall sheets/small screens).
     val density = androidx.compose.ui.platform.LocalDensity.current
     var sheetHeight by remember { mutableStateOf(0.dp) }
 
-    val dashViewModel: com.example.opendash.viewmodel.DashViewModel = viewModel()
     val dashUi by dashViewModel.ui.collectAsState()
     val isActiveNavigation = routeState.navigating
 
@@ -151,6 +166,12 @@ fun RouteScreen(
         }
     }
 
+    // Ensure the turn-by-turn engine is running whenever this screen shows active nav, so
+    // the banner has live maneuvers even if the rider never opened the Dash screen.
+    LaunchedEffect(isActiveNavigation) {
+        if (isActiveNavigation) dashViewModel.startNavEngine()
+    }
+
     val canStart = dest?.lat != null && dest.lng != null && !routeState.isResolving
     val inRoutePreview = dest != null || routeState.isResolving
 
@@ -204,29 +225,45 @@ fun RouteScreen(
         val navBarDp = with(density) {
             androidx.compose.foundation.layout.WindowInsets.navigationBars.getBottom(this).toDp()
         }
-        Box(Modifier.fillMaxSize().background(MapBase)) {
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow)) {
             // ── Full-screen map ──
             // Blue-dot compass beam: follows the phone's orientation while standing still,
             // hands off to GPS travel bearing once moving (camera never rotates with it).
             val deviceAzimuth by rememberDeviceAzimuth()
             val dotBearing =
                 if ((dashUi.speedKmh ?: 0) < 5) deviceAzimuth else dashUi.riderBearing
+            // Active navigation drives the camera heading-up and follows the rider (unless the
+            // user opened the route overview). Alternates/bubbles are hidden while navigating.
+            val navFollow = isActiveNavigation && !navOverview
             OpenDashMap(
                 riderLat = riderLoc?.latitude,
                 riderLng = riderLoc?.longitude,
                 dest = dest?.let { d -> if (d.lat != null && d.lng != null) d.lat to d.lng else null },
                 routePoints = routeState.route?.geometry.orEmpty(),
                 routeCongestion = routeState.route?.congestion.orEmpty(),
-                allRoutes = routeState.routes.map { it.geometry },
-                routeDurations = routeState.routes.map { routeDurationShort(it.totalSeconds) },
+                allRoutes = if (isActiveNavigation) emptyList() else routeState.routes.map { it.geometry },
+                allRouteCongestions = if (isActiveNavigation) emptyList() else routeState.routes.map { it.congestion },
+                routeDurations = if (isActiveNavigation) emptyList() else routeState.routes.map { routeDurationShort(it.totalSeconds) },
                 selectedRouteIndex = routeState.selectedRouteIndex,
                 onSelectRoute = { routeViewModel.selectRoute(it) },
                 hasLocationPermission = hasLocation,
-                fitRoute = !routeState.isRecordingRoute,
+                fitRoute = if (isActiveNavigation) navOverview else !routeState.isRecordingRoute,
+                navMode = navFollow,
+                riderBearing = dashUi.riderBearing,
+                cameraAheadOffset = navFollow,
+                // Full-screen phone nav: a slightly pulled-back, tilted 3D view like Google
+                // (the dash's own auto-zoom is tuned for the tiny round cluster, too close here).
+                zoom = if (navFollow) 16.5 else null,
+                navTiltDeg = if (navFollow) 50.0 else 0.0,
+                maneuverPoint = if (navFollow && dashUi.maneuverLat != null && dashUi.maneuverLng != null)
+                    dashUi.maneuverLat!! to dashUi.maneuverLng!! else null,
+                maneuverType = dashUi.maneuverType,
+                maneuverRoad = dashUi.maneuverRoad,
                 recenterKey = recenterKey,
                 satellite = satellite,
+                night = false,
                 showAttribution = false,
-                markerBearing = dotBearing,
+                markerBearing = if (navFollow) null else dotBearing,
                 // Grey the ridden part of the route while actually navigating.
                 showTravelledGrey = isActiveNavigation,
                 peers = groupRideState.peers,
@@ -280,14 +317,14 @@ fun RouteScreen(
                                         placeholder = {
                                             Text(
                                                 "Search new destination",
-                                                color = TextLo, fontSize = 15.sp, fontFamily = GeistFamily,
+                                                color = MaterialTheme.colorScheme.outline, fontSize = 15.sp, fontFamily = GeistFamily,
                                             )
                                         },
                                         singleLine = true,
                                         trailingIcon = {
                                             if (routeState.searchQuery.isNotEmpty()) {
                                                 Icon(
-                                                    OpenDashIcons.X, contentDescription = "Clear", tint = TextMid,
+                                                    OpenDashIcons.X, contentDescription = "Clear", tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                                     modifier = Modifier.size(20.dp).clickable { routeViewModel.onSearchQueryChange("") },
                                                 )
                                             }
@@ -306,133 +343,45 @@ fun RouteScreen(
                         }
                     }
                 } else {
-                    val infiniteTransition = rememberInfiniteTransition(label = "route-pulse")
-                    val pulseAlpha by infiniteTransition.animateFloat(
-                        1f, 0.4f,
-                        animationSpec = infiniteRepeatable(tween(1000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-                        label = "pulse",
+                    // Google-style green maneuver banner: turn arrow + distance + next road,
+                    // plus a "Then <arrow>" tab for the maneuver after it.
+                    NavManeuverBanner(
+                        maneuverType = dashUi.maneuverType,
+                        distanceM = dashUi.nextTurnM,
+                        instruction = dashUi.maneuver,
+                        secondManeuverType = dashUi.secondManeuverType,
+                        destinationName = dashUi.destinationName.orEmpty()
+                            .ifBlank { routeState.destination?.name.orEmpty() },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .statusBarsPadding()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                     )
 
-                    // Floating Active Navigation Card
-                    OpenDashCard(
-                        glow = true,
-                        padding = 14.dp,
+                    // Speed pill, bottom-left (Google-style), sitting just above the sheet.
+                    NavSpeedPill(
+                        speedKmh = dashUi.speedKmh,
                         modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .statusBarsPadding()
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
-                            .fillMaxWidth()
-                            .clickable { onNavigateToDash() }
-                    ) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            // Header row: pulsing dot + title + close btn
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(Ok.copy(alpha = pulseAlpha))
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "ACTIVE NAVIGATION",
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = GeistFamily,
-                                    letterSpacing = 1.sp,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                OpenDashIconBtn(
-                                    OpenDashIcons.X,
-                                    onClick = {
-                                        routeViewModel.clear()
-                                        dashViewModel.exitNavigation()
-                                    },
-                                    size = 32.dp,
-                                    modifier = Modifier.background(
-                                        MaterialTheme.colorScheme.surfaceVariant,
-                                        CircleShape
-                                    )
-                                )
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            // Destination name
-                            Text(
-                                dashUi.destinationName.orEmpty().ifBlank { routeState.destination?.name.orEmpty() },
-                                color = TextHi,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = GeistFamily,
-                                maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            // Stats row
-                            val liveDistText = dashUi.remainingKm?.let {
-                                if (it >= 10) "%.0f km".format(it) else "%.1f km".format(it)
-                            } ?: routeState.distanceText
-                            val liveDurText = dashUi.etaMinutes?.let {
-                                if (it >= 60) "${it / 60}h ${it % 60}m" else "$it min"
-                            } ?: routeState.durationText
-                            val liveEtaText = dashUi.etaMinutes?.let {
-                                val cal = java.util.Calendar.getInstance()
-                                cal.add(java.util.Calendar.MINUTE, it)
-                                "%02d:%02d".format(cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE))
-                            } ?: routeState.etaText
+                            .align(Alignment.BottomStart)
+                            .navigationBarsPadding()
+                            .padding(start = 16.dp, bottom = 96.dp + navBarDp),
+                    )
 
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                liveDistText?.let { dist ->
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(Color(0x1A8F7C2E))
-                                            .border(1.dp, Color(0x338F7C2E), RoundedCornerShape(8.dp))
-                                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(OpenDashIcons.Road, null, tint = Gold, modifier = Modifier.size(12.dp))
-                                            Spacer(Modifier.width(6.dp))
-                                            Text(dist, color = TextHi, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
-                                        }
-                                    }
-                                }
-                                liveDurText?.let { dur ->
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(Color(0x1A10B981))
-                                            .border(1.dp, Color(0x3310B981), RoundedCornerShape(8.dp))
-                                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(OpenDashIcons.Clock, null, tint = Ok, modifier = Modifier.size(12.dp))
-                                            Spacer(Modifier.width(6.dp))
-                                            Text(dur, color = Ok, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
-                                        }
-                                    }
-                                }
-                                liveEtaText?.let { eta ->
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(Color(0x1A94A3B8))
-                                            .border(1.dp, Color(0x3394A3B8), RoundedCornerShape(8.dp))
-                                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(OpenDashIcons.Flag, null, tint = TextMid, modifier = Modifier.size(12.dp))
-                                            Spacer(Modifier.width(6.dp))
-                                            Text(eta, color = TextHi, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    // Bottom ETA sheet: exit (X) · ETA/dist/arrival · route overview toggle.
+                    NavBottomSheet(
+                        remainingKm = dashUi.remainingKm ?: routeState.route?.let { it.totalMeters / 1000.0 },
+                        etaMinutes = dashUi.etaMinutes ?: routeState.route?.let { (it.totalSeconds / 60).toInt() },
+                        overview = navOverview,
+                        onExit = {
+                            routeViewModel.clear()
+                            dashViewModel.exitNavigation()
+                            navOverview = false
+                        },
+                        onToggleOverview = { navOverview = !navOverview },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth(),
+                    )
                 }
             }
 
@@ -445,7 +394,11 @@ fun RouteScreen(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .navigationBarsPadding()
-                        .padding(end = 16.dp, bottom = if (inRoutePreview) sheetHeight + 16.dp else 20.dp),
+                        .padding(end = 16.dp, bottom = when {
+                            isActiveNavigation -> 96.dp
+                            inRoutePreview -> sheetHeight + 16.dp
+                            else -> 20.dp
+                        }),
                 ) {
                     Surface(
                         onClick = { satellite = !satellite },
@@ -484,7 +437,7 @@ fun RouteScreen(
                         Surface(
                             onClick = { showGroupRide = true },
                             shape = CircleShape,
-                            color = if (groupRideState.active) MaterialTheme.colorScheme.primaryContainer
+                            color = if (groupRideState.active && groupRideState.isLocationActive) MaterialTheme.colorScheme.primaryContainer
                                     else MaterialTheme.colorScheme.surface,
                             shadowElevation = 4.dp,
                             modifier = Modifier.size(48.dp),
@@ -492,9 +445,33 @@ fun RouteScreen(
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     OpenDashIcons.GroupRide, contentDescription = "Group ride",
-                                    tint = if (groupRideState.active) MaterialTheme.colorScheme.onPrimaryContainer
+                                    tint = if (groupRideState.active && groupRideState.isLocationActive) MaterialTheme.colorScheme.onPrimaryContainer
                                            else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(24.dp),
+                                )
+                            }
+                        }
+                        Surface(
+                            onClick = {
+                                if (androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                                    showIntercom = true
+                                } else {
+                                    intercomMicLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                }
+                            },
+                            shape = CircleShape,
+                            color = if (groupRideState.active && groupRideState.isIntercomActive) MaterialTheme.colorScheme.primaryContainer
+                                    else MaterialTheme.colorScheme.surface,
+                            shadowElevation = 4.dp,
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    painter = androidx.compose.ui.res.painterResource(com.example.opendash.R.drawable.ic_intercom),
+                                    contentDescription = "Mesh Intercom",
+                                    tint = if (groupRideState.active && groupRideState.isIntercomActive) MaterialTheme.colorScheme.onPrimaryContainer
+                                           else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp),
                                 )
                             }
                         }
@@ -506,7 +483,19 @@ fun RouteScreen(
                 GroupRideSheet(
                     riderLat = riderLoc?.latitude,
                     riderLng = riderLoc?.longitude,
-                    onDismiss = { showGroupRide = false },
+                    initialCode = null,
+                    onDismiss = {
+                        showGroupRide = false
+                    },
+                )
+            }
+
+            if (showIntercom) {
+                com.example.opendash.ui.components.IntercomSheet(
+                    initialCode = null,
+                    onDismiss = {
+                        showIntercom = false
+                    },
                 )
             }
 
@@ -567,14 +556,14 @@ fun RouteScreen(
                                     placeholder = {
                                         Text(
                                             if (routeState.isResolving) "Resolving Maps link…" else "Search here",
-                                            color = TextLo, fontSize = 15.sp, fontFamily = GeistFamily,
+                                            color = MaterialTheme.colorScheme.outline, fontSize = 15.sp, fontFamily = GeistFamily,
                                         )
                                     },
                                     singleLine = true,
                                     trailingIcon = {
                                         if (routeState.searchQuery.isNotEmpty()) {
                                             Icon(
-                                                OpenDashIcons.X, contentDescription = "Clear", tint = TextMid,
+                                                OpenDashIcons.X, contentDescription = "Clear", tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 modifier = Modifier.size(20.dp).clickable { routeViewModel.onSearchQueryChange("") },
                                             )
                                         }
@@ -591,7 +580,7 @@ fun RouteScreen(
                     // ── Saved destinations (non-trail) shown below search bar ──
                     val displayedSaved = remember(savedList) {
                         savedList.filter { loc ->
-                            !java.io.File(ctx.filesDir, "route_${loc.sid}.json").exists()
+                            !java.io.File(ctx.filesDir, "trail_${loc.sid}.json").exists()
                         }
                     }
                     if (displayedSaved.isNotEmpty() && routeState.searchQuery.isEmpty() && routeState.searchResults.isEmpty()) {
@@ -651,20 +640,11 @@ fun RouteScreen(
                         verticalAlignment = Alignment.Top,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        OpenDashIconBtn(
-                            OpenDashIcons.ChevronLeft,
-                            onClick = onBackAction,
-                            size = 46.dp,
-                            modifier = Modifier
-                                .padding(top = 2.dp)
-                                .background(Bg1.copy(alpha = 0.95f), CircleShape),
-                        )
-                        Spacer(Modifier.width(10.dp))
                         Column(
                             Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(20.dp))
-                                .background(Bg1.copy(alpha = 0.96f))
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
                                 .padding(horizontal = 14.dp, vertical = 10.dp),
                         ) {
                             Row(
@@ -673,7 +653,7 @@ fun RouteScreen(
                             ) {
                                 Icon(OpenDashIcons.Cross, contentDescription = null, tint = Color(0xFF4285F4), modifier = Modifier.size(17.dp))
                                 Spacer(Modifier.width(10.dp))
-                                Text("Your location", color = TextHi, fontSize = 13.5.sp, fontFamily = GeistFamily)
+                                Text("Your location", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.5.sp, fontFamily = GeistFamily)
                             }
                             val waypoints = routeState.stops + listOfNotNull(dest)
                             waypoints.forEachIndexed { idx, wp ->
@@ -690,18 +670,18 @@ fun RouteScreen(
                                         .offset {
                                             if (isDraggingThis) IntOffset(0, dragOffsetY.roundToInt()) else IntOffset.Zero
                                         }
-                                        .background(if (isDraggingThis) Bg1.copy(alpha = 0.8f) else Color.Transparent)
+                                        .background(if (isDraggingThis) MaterialTheme.colorScheme.surface.copy(alpha = 0.8f) else Color.Transparent)
                                 ) {
                                     Icon(
                                         if (isStop) OpenDashIcons.Circle else OpenDashIcons.LocationPin,
                                         contentDescription = null,
-                                        tint = if (isStop) TextLo else Color(0xFFEA4335),
+                                        tint = if (isStop) MaterialTheme.colorScheme.outline else Color(0xFFEA4335),
                                         modifier = Modifier.size(if (isStop) 14.dp else 17.dp).padding(horizontal = if (isStop) 1.5.dp else 0.dp)
                                     )
                                     Spacer(Modifier.width(10.dp))
                                     Text(
                                         displayTitle,
-                                        color = TextHi, fontSize = 13.5.sp,
+                                        color = MaterialTheme.colorScheme.onSurface, fontSize = 13.5.sp,
                                         fontWeight = if (isStop) FontWeight.Normal else FontWeight.Bold,
                                         fontFamily = GeistFamily,
                                         modifier = Modifier.weight(1f).clickable {
@@ -723,7 +703,7 @@ fun RouteScreen(
                                         Icon(
                                             OpenDashIcons.Reorder,
                                             contentDescription = "Drag to reorder",
-                                            tint = TextLo,
+                                            tint = MaterialTheme.colorScheme.outline,
                                             modifier = Modifier
                                                 .size(20.dp)
                                                 .pointerInput(idx, waypoints.size) {
@@ -762,7 +742,7 @@ fun RouteScreen(
                                         Icon(
                                             OpenDashIcons.X,
                                             contentDescription = "Remove stop",
-                                            tint = TextLo,
+                                            tint = MaterialTheme.colorScheme.outline,
                                             modifier = Modifier.size(18.dp).clickable { routeViewModel.removeStop(idx) }
                                         )
                                     }
@@ -779,7 +759,7 @@ fun RouteScreen(
                         .fillMaxWidth()
                         .onGloballyPositioned { sheetHeight = with(density) { it.size.height.toDp() } }
                         .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                        .background(Bg1)
+                        .background(MaterialTheme.colorScheme.surface)
                         .heightIn(max = 430.dp)
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 18.dp)
@@ -797,7 +777,7 @@ fun RouteScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             if (routeState.isResolving) "Resolving…" else destName,
-                            color = TextHi, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold,
                             fontFamily = GeistFamily, letterSpacing = (-0.36).sp, maxLines = 1,
                             modifier = Modifier.weight(1f),
                         )
@@ -820,7 +800,7 @@ fun RouteScreen(
                                 OpenDashIcons.Save,
                                 onClick = { showSave = true },
                                 size = 40.dp,
-                                modifier = Modifier.background(Surf1, CircleShape),
+                                modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainer, CircleShape),
                             )
                         }
                     }
@@ -834,7 +814,7 @@ fun RouteScreen(
                                 routeState.routing -> "Finding route…"
                                 else               -> routeState.durationText ?: "—"
                             },
-                            color = if (routeState.routing) TextMid else Ok,
+                            color = if (routeState.routing) MaterialTheme.colorScheme.onSurfaceVariant else Ok,
                             fontSize = 26.sp, fontWeight = FontWeight.Bold,
                             fontFamily = GeistFamily, letterSpacing = (-0.5).sp,
                         )
@@ -844,14 +824,14 @@ fun RouteScreen(
                                 routeState.distanceText,
                                 routeState.etaText?.let { "arrive $it" },
                             ).joinToString(" · "),
-                            color = TextMid, fontSize = 14.sp, fontFamily = GeistFamily,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp, fontFamily = GeistFamily,
                             modifier = Modifier.padding(bottom = 4.dp),
                         )
                     }
                     if (routeState.routes.size > 1) {
                         Text(
                             "Tap a route on the map to compare",
-                            color = TextLo, fontSize = 12.sp, fontFamily = GeistFamily,
+                            color = MaterialTheme.colorScheme.outline, fontSize = 12.sp, fontFamily = GeistFamily,
                             modifier = Modifier.padding(top = 4.dp),
                         )
                     }
@@ -875,7 +855,7 @@ fun RouteScreen(
                                 isAwayFromTrailStart   -> "Head to trail starting point"
                                 else                   -> "Start"
                             },
-                            onClick = { routeViewModel.startNavigation(); sent = true },
+                            onClick = { navOverview = false; routeViewModel.startNavigation(); sent = true },
                             icon = if (sent) OpenDashIcons.Check else OpenDashIcons.Navi,
                             variant = if (sent) BtnVariant.Secondary else BtnVariant.Primary,
                             size = BtnSize.Md,
@@ -907,13 +887,13 @@ fun RouteScreen(
                             modifier = Modifier
                                 .size(50.dp)
                                 .clip(CircleShape)
-                                .background(if (voiceMode == VoiceMode.OFF) Surf1 else GoldTint)
+                                .background(if (voiceMode == VoiceMode.OFF) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.primaryContainer)
                                 .clickable { voiceManager.setMode(nextVoice) },
                         ) {
                             Icon(
                                 if (voiceMode == VoiceMode.OFF) OpenDashIcons.SpeakerOff else OpenDashIcons.Speaker,
                                 contentDescription = "Voice: ${voiceMode.name.lowercase()}",
-                                tint = if (voiceMode == VoiceMode.OFF) TextMid else Gold,
+                                tint = if (voiceMode == VoiceMode.OFF) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(22.dp),
                             )
                         }
@@ -1031,7 +1011,7 @@ fun RouteScreen(
                         .fillMaxWidth()
                         .onGloballyPositioned { sheetHeight = with(density) { it.size.height.toDp() } }
                         .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                        .background(Bg1)
+                        .background(MaterialTheme.colorScheme.surface)
                         .imePadding()
                         .padding(horizontal = 18.dp)
                         .padding(top = 16.dp, bottom = 24.dp + navBarDp),
@@ -1051,12 +1031,12 @@ fun RouteScreen(
                         singleLine = true,
                         placeholder = { Text("e.g. Secret mountain shortcut") },
                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = TextHi,
-                            unfocusedTextColor = TextHi,
-                            focusedBorderColor = Gold,
+                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
                             unfocusedBorderColor = Line3,
-                            focusedLabelColor = Gold,
-                            unfocusedLabelColor = TextLo
+                            focusedLabelColor = MaterialTheme.colorScheme.primary,
+                            unfocusedLabelColor = MaterialTheme.colorScheme.outline
                         ),
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, fontFamily = GeistFamily),
                         modifier = Modifier.fillMaxWidth()
@@ -1081,11 +1061,11 @@ fun RouteScreen(
     if (showStartAlert) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showStartAlert = false },
-            containerColor = Bg1,
+            containerColor = MaterialTheme.colorScheme.surface,
             title = {
                 Text(
                     "Trail Start Reached",
-                    color = TextHi,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold,
                     fontFamily = GeistFamily
                 )
@@ -1093,14 +1073,14 @@ fun RouteScreen(
             text = {
                 Text(
                     "You have reached the starting point of your custom trail. Have a safe ride!",
-                    color = TextLo,
+                    color = MaterialTheme.colorScheme.outline,
                     fontFamily = GeistFamily,
                     fontSize = 14.sp
                 )
             },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = { showStartAlert = false }) {
-                    Text("OK", color = Gold, fontFamily = GeistFamily, fontWeight = FontWeight.Bold)
+                    Text("OK", color = MaterialTheme.colorScheme.primary, fontFamily = GeistFamily, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -1157,9 +1137,9 @@ private fun PlaceRow(
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, color = TextHi, fontSize = 15.sp, fontWeight = FontWeight.Medium, fontFamily = GeistFamily, maxLines = 1)
+            Text(title, color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium, fontFamily = GeistFamily, maxLines = 1)
             if (sub.isNotBlank()) {
-                Text(sub, color = TextLo, fontSize = 12.5.sp, fontFamily = GeistFamily, maxLines = 1, modifier = Modifier.padding(top = 1.dp))
+                Text(sub, color = MaterialTheme.colorScheme.outline, fontSize = 12.5.sp, fontFamily = GeistFamily, maxLines = 1, modifier = Modifier.padding(top = 1.dp))
             }
         }
     }
@@ -1222,13 +1202,13 @@ private fun TravelModeIcon(
         modifier = Modifier
             .size(40.dp)
             .clip(CircleShape)
-            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Surf1)
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer)
             .clickable(onClick = onClick),
     ) {
         Icon(
             icon,
             contentDescription = null,
-            tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else TextMid,
+            tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(20.dp),
         )
     }
@@ -1246,16 +1226,16 @@ private fun SaveLocationDialog(defaultName: String, onSave: (String, String) -> 
     var note by remember { mutableStateOf("") }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { androidx.compose.material3.TextButton(enabled = name.isNotBlank(), onClick = { onSave(name.trim(), note.trim()) }) { Text("Save", color = if (name.isNotBlank()) Gold else TextLo) } },
-        dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel", color = TextMid) } },
-        title = { Text("Save destination", color = TextHi) },
+        confirmButton = { androidx.compose.material3.TextButton(enabled = name.isNotBlank(), onClick = { onSave(name.trim(), note.trim()) }) { Text("Save", color = if (name.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline) } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+        title = { Text("Save destination", color = MaterialTheme.colorScheme.onSurface) },
         text = {
             Column {
                 androidx.compose.material3.OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 androidx.compose.material3.OutlinedTextField(note, { note = it }, label = { Text("Note (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
             }
         },
-        containerColor = Surf1,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
     )
 }
 
@@ -1271,9 +1251,9 @@ internal fun EditLocationDialog(
     var note by remember { mutableStateOf(loc.note) }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { androidx.compose.material3.TextButton(enabled = name.isNotBlank(), onClick = { onSave(name.trim(), note.trim()) }) { Text("Save", color = if (name.isNotBlank()) Gold else TextLo) } },
-        dismissButton = { androidx.compose.material3.TextButton(onClick = onDelete) { Text("Delete", color = Alert) } },
-        title = { Text(if (showNote) "Edit destination" else "Edit trail name", color = TextHi) },
+        confirmButton = { androidx.compose.material3.TextButton(enabled = name.isNotBlank(), onClick = { onSave(name.trim(), note.trim()) }) { Text("Save", color = if (name.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline) } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onDelete) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
+        title = { Text(if (showNote) "Edit destination" else "Edit trail name", color = MaterialTheme.colorScheme.onSurface) },
         text = {
             Column {
                 androidx.compose.material3.OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -1282,7 +1262,7 @@ internal fun EditLocationDialog(
                 }
             }
         },
-        containerColor = Surf1,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
     )
 }
 
@@ -1293,18 +1273,18 @@ private fun SaveTrailDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         confirmButton = {
             androidx.compose.material3.TextButton(enabled = name.isNotBlank(), onClick = { onSave(name.trim()) }) {
-                Text("Save", color = if (name.isNotBlank()) Gold else TextLo)
+                Text("Save", color = if (name.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
             }
         },
         dismissButton = {
             androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text("Cancel", color = TextMid)
+                Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
-        title = { Text("Save custom trail", color = TextHi) },
+        title = { Text("Save custom trail", color = MaterialTheme.colorScheme.onSurface) },
         text = {
             Column {
-                Text("Enter a name for this recorded trail route:", color = TextMid, fontSize = 14.sp)
+                Text("Enter a name for this recorded trail route:", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
                 Spacer(Modifier.height(8.dp))
                 androidx.compose.material3.OutlinedTextField(
                     value = name,
@@ -1316,6 +1296,243 @@ private fun SaveTrailDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {
                 )
             }
         },
-        containerColor = Surf1,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
     )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Google-Maps-style active-navigation UI (turn banner + ETA sheet + speed pill).
+// Driven by the live DashViewModel nav engine (maneuver/distance/ETA/speed).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Google's teal navigation green for the top maneuver banner. */
+private val NavGreen = Color(0xFF177867)
+
+/** Maneuver-type → turn-arrow icon (same vocabulary the dash view uses). */
+private fun maneuverArrowIcon(t: com.example.opendash.dash.nav.ManeuverType?) = when (t) {
+    com.example.opendash.dash.nav.ManeuverType.TURN_LEFT   -> OpenDashIcons.TurnLeft
+    com.example.opendash.dash.nav.ManeuverType.SHARP_LEFT  -> OpenDashIcons.TurnLeft
+    com.example.opendash.dash.nav.ManeuverType.SLIGHT_LEFT -> OpenDashIcons.SlightLeft
+    com.example.opendash.dash.nav.ManeuverType.TURN_RIGHT  -> OpenDashIcons.TurnRight
+    com.example.opendash.dash.nav.ManeuverType.SHARP_RIGHT -> OpenDashIcons.TurnRight
+    com.example.opendash.dash.nav.ManeuverType.SLIGHT_RIGHT-> OpenDashIcons.SlightRight
+    com.example.opendash.dash.nav.ManeuverType.UTURN       -> OpenDashIcons.UTurn
+    com.example.opendash.dash.nav.ManeuverType.ROUNDABOUT  -> OpenDashIcons.Swap
+    com.example.opendash.dash.nav.ManeuverType.ARRIVE      -> OpenDashIcons.LocationPin
+    else -> OpenDashIcons.ArrowUp
+}
+
+/** Distance to the next maneuver, Google-style ("260 m", "1.2 km"). */
+private fun navDistanceText(m: Double?): String = when {
+    m == null -> ""
+    m >= 1000 -> "%.1f km".format(m / 1000.0)
+    m >= 100  -> "${(m / 10).toInt() * 10} m"
+    else      -> "${(m / 10).toInt() * 10 + 10} m".let { if (m < 10) "10 m" else it }
+}
+
+/** Extract the road name from a maneuver instruction ("Turn right onto Baif Rd" → "Baif Rd"). */
+private fun navRoadText(instruction: String?, fallback: String): String {
+    if (instruction.isNullOrBlank()) return fallback
+    for (sep in listOf(" onto ", " on ", " toward ", " towards ")) {
+        val i = instruction.indexOf(sep, ignoreCase = true)
+        if (i >= 0) return instruction.substring(i + sep.length).trim().ifBlank { fallback }
+    }
+    return instruction
+}
+
+@Composable
+private fun NavManeuverBanner(
+    maneuverType: com.example.opendash.dash.nav.ManeuverType?,
+    distanceM: Double?,
+    instruction: String?,
+    secondManeuverType: com.example.opendash.dash.nav.ManeuverType?,
+    destinationName: String,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = NavGreen,
+            shadowElevation = 6.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            ) {
+                Icon(
+                    maneuverArrowIcon(maneuverType),
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(48.dp),
+                )
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    val dist = navDistanceText(distanceM)
+                    if (dist.isNotBlank()) {
+                        Text(
+                            dist,
+                            color = Color.White,
+                            fontSize = 27.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = GeistFamily,
+                            letterSpacing = (-0.5).sp,
+                        )
+                    }
+                    Text(
+                        navRoadText(instruction, destinationName.ifBlank { "Continue straight" }),
+                        color = Color.White,
+                        fontSize = if (dist.isBlank()) 20.sp else 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = GeistFamily,
+                        maxLines = 2,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        lineHeight = 24.sp,
+                    )
+                }
+            }
+        }
+        // "Then <next arrow>" tab, attached under the banner's left edge (Google-style).
+        if (secondManeuverType != null) {
+            Surface(
+                shape = RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp),
+                color = NavGreen.copy(alpha = 0.92f),
+                modifier = Modifier.padding(start = 14.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                ) {
+                    Text("Then", color = Color.White.copy(alpha = 0.9f), fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium, fontFamily = GeistFamily)
+                    Spacer(Modifier.width(8.dp))
+                    Icon(maneuverArrowIcon(secondManeuverType), contentDescription = null,
+                        tint = Color.White, modifier = Modifier.size(22.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavSpeedPill(speedKmh: Int?, modifier: Modifier = Modifier) {
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 4.dp,
+        modifier = modifier.size(64.dp),
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            Text(
+                speedKmh?.toString() ?: "--",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = GeistMonoFamily,
+                letterSpacing = (-0.5).sp,
+            )
+            Text(
+                "km/h",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.sp,
+                fontFamily = GeistFamily,
+            )
+        }
+    }
+}
+
+@Composable
+private fun NavBottomSheet(
+    remainingKm: Double?,
+    etaMinutes: Int?,
+    overview: Boolean,
+    onExit: () -> Unit,
+    onToggleOverview: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val navBarDp = with(density) {
+        androidx.compose.foundation.layout.WindowInsets.navigationBars.getBottom(this).toDp()
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        shadowElevation = 12.dp,
+        modifier = modifier,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(top = 16.dp, bottom = 16.dp + navBarDp),
+        ) {
+            // Exit navigation (X).
+            Surface(
+                onClick = onExit,
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                modifier = Modifier.size(52.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(OpenDashIcons.X, contentDescription = "Exit navigation",
+                        tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(24.dp))
+                }
+            }
+
+            // Center: ETA (min) big, then "x km · arrival clock".
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.weight(1f),
+            ) {
+                val mins = etaMinutes
+                val etaBig = when {
+                    mins == null -> "-- min"
+                    mins >= 60   -> "${mins / 60} h ${mins % 60} min"
+                    else         -> "$mins min"
+                }
+                Text(
+                    etaBig,
+                    color = Ok,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = GeistFamily,
+                )
+                val distText = remainingKm?.let {
+                    if (it >= 10) "%.0f km".format(it) else "%.1f km".format(it)
+                } ?: "-- km"
+                val arrivalText = mins?.let {
+                    val cal = java.util.Calendar.getInstance()
+                    cal.add(java.util.Calendar.MINUTE, it)
+                    java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault()).format(cal.time)
+                } ?: ""
+                Text(
+                    if (arrivalText.isNotBlank()) "$distText · $arrivalText" else distText,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp,
+                    fontFamily = GeistFamily,
+                )
+            }
+
+            // Route overview toggle (route options button).
+            Surface(
+                onClick = onToggleOverview,
+                shape = CircleShape,
+                color = if (overview) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceContainerHighest,
+                modifier = Modifier.size(52.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(OpenDashIcons.Swap, contentDescription = "Route overview",
+                        tint = if (overview) MaterialTheme.colorScheme.onPrimaryContainer
+                               else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(24.dp))
+                }
+            }
+        }
+    }
 }

@@ -124,6 +124,12 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
                 } catch (e: Exception) {
                     // Ignore cache delete error
                 }
+                try {
+                    val file = java.io.File(getApplication<Application>().filesDir, "trail_${loc.sid}.json")
+                    if (file.exists()) file.delete()
+                } catch (e: Exception) {
+                    // Ignore trail delete error
+                }
             } 
         }
 
@@ -134,32 +140,38 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
             isResolving = false,
             pendingNavigate = false,
         )
-        // Try to load cached route from disk first (useful when offline)
+        // Try to load custom trail or cached route from disk first (useful when offline)
+        val trailFile = java.io.File(getApplication<Application>().filesDir, "trail_${loc.sid}.json")
         val cacheFile = java.io.File(getApplication<Application>().filesDir, "route_${loc.sid}.json")
-        if (cacheFile.exists()) {
+        val fileToLoad = if (trailFile.exists()) trailFile else if (cacheFile.exists()) cacheFile else null
+
+        if (fileToLoad != null) {
             try {
-                val json = cacheFile.readText()
+                val json = fileToLoad.readText()
                 val (routes, selectedIdx) = com.example.opendash.dash.nav.Route.routesFromJson(json)
                 val route = routes.getOrNull(selectedIdx) ?: routes.firstOrNull()
                 if (route != null) {
+                    val isTrail = fileToLoad == trailFile
                     _state.value = _state.value.copy(
                         route = route,
                         routes = routes,
                         selectedRouteIndex = selectedIdx,
-                        isCustomTrail = true,
-                        trailStart = route.geometry.firstOrNull(),
+                        isCustomTrail = isTrail,
+                        trailStart = if (isTrail) route.geometry.firstOrNull() else null,
                         distanceText = fmtKm(route.totalMeters),
                         durationText = fmtDuration(route.totalSeconds),
                         etaText = fmtEta(route.totalSeconds),
                     )
                     
-                    // Asynchronously calculate a route from current location to the start of the trail
-                    calculateRouteToTrailStart(route)
-                    DebugLog.i(TAG) { "Loaded route cache with ${routes.size} routes for ${loc.name}" }
+                    if (isTrail) {
+                        // Asynchronously calculate a route from current location to the start of the trail
+                        calculateRouteToTrailStart(route)
+                    }
+                    DebugLog.i(TAG) { "Loaded route/trail file with ${routes.size} routes for ${loc.name}" }
                     return
                 }
             } catch (e: Exception) {
-                DebugLog.w(TAG) { "Failed to load route cache: ${e.message}" }
+                DebugLog.w(TAG) { "Failed to load route file: ${e.message}" }
             }
         }
         _state.value = _state.value.copy(isCustomTrail = false, trailStart = null)
@@ -605,7 +617,7 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
                         cumulative = cumulative
                     )
                     
-                    val file = java.io.File(getApplication<Application>().filesDir, "route_${sid}.json")
+                    val file = java.io.File(getApplication<Application>().filesDir, "trail_${sid}.json")
                     file.writeText(com.example.opendash.dash.nav.Route.routesToJson(listOf(route), 0))
                     DebugLog.i(TAG) { "Successfully saved custom recorded route cache for $sid" }
                 } catch (e: Exception) {
@@ -708,7 +720,7 @@ class RouteViewModel(app: Application) : AndroidViewModel(app) {
                         cumulative = cumulative
                     )
                     
-                    val file = java.io.File(getApplication<Application>().filesDir, "route_${sid}.json")
+                    val file = java.io.File(getApplication<Application>().filesDir, "trail_${sid}.json")
                     file.writeText(com.example.opendash.dash.nav.Route.routesToJson(listOf(route), 0))
                 }
 

@@ -4,15 +4,6 @@ import java.io.FileInputStream
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
-    // Firebase is OPTIONAL / bring-your-own-project: the Google Services plugin is only
-    // applied when a google-services.json is present. Without it the app builds and runs
-    // fully local (no sync) — a rider who doesn't want multi-device sync just omits the
-    // file. To enable sync, drop your own Firebase project's google-services.json in app/.
-    alias(libs.plugins.google.services) apply false
-}
-
-if (project.file("google-services.json").exists()) {
-    apply(plugin = "com.google.gms.google-services")
 }
 
 val localProperties = Properties().apply {
@@ -164,6 +155,7 @@ dependencies {
     // Group Ride: Supabase Realtime broadcast channels (live rider positions, serverless).
     implementation(platform("io.github.jan-tennert.supabase:bom:3.2.2"))
     implementation("io.github.jan-tennert.supabase:realtime-kt")
+    implementation("io.getstream:stream-webrtc-android:1.3.0")
     implementation("io.ktor:ktor-client-okhttp:3.2.3")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
@@ -177,13 +169,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.auth)
-    implementation(libs.firebase.firestore)
-    implementation(libs.androidx.credentials)
-    implementation(libs.androidx.credentials.play.services)
     implementation(libs.androidx.security.crypto)
-    implementation(libs.google.identity.googleid)
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.maplibre)
     implementation(libs.maplibre.annotation)

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext stays blocked everywhere except loopback: the offline-maps downloader is
+     handed its combined style from a short-lived local HTTP server (MapLibre's offline
+     engine only accepts http(s) style URLs). -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

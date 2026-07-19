@@ -5,19 +5,21 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Navigation preferences. [liveTraffic] controls whether the route's traffic coloring is
- * refreshed periodically while riding (a routing API call every couple of minutes) versus
- * only computed once at planning time. Off by default — turn it on once a billed API key is
- * ready, since it costs a handful of extra calls per ride.
+ * Navigation preferences. Live-traffic refresh while riding is always on (throttled inside
+ * DashViewModel) — no toggle, per the no-fake-toggles rule.
  */
 object NavSettings {
     private const val PREFS = "appearance"
-    private const val KEY_LIVE_TRAFFIC = "live_traffic"
     private const val KEY_CUSTOM_TRAILS = "custom_trails_enabled"
     private const val KEY_BIKE_MARKER = "bike_marker"
+    private const val KEY_MAP_THEME = "map_theme"
+    private const val KEY_INTERCOM_VOLUME = "intercom_volume"
 
-    private val _liveTraffic = MutableStateFlow(false)
-    val liveTraffic = _liveTraffic.asStateFlow()
+    /** Map day/night theme. AUTO switches to night at [NIGHT_START_HOUR] and back at [DAY_START_HOUR]. */
+    enum class MapTheme { DAY, NIGHT, AUTO }
+
+    const val NIGHT_START_HOUR = 19 // 7 pm
+    const val DAY_START_HOUR = 6    // 6 am
 
     private val _customTrailsEnabled = MutableStateFlow(true)
     val customTrailsEnabled = _customTrailsEnabled.asStateFlow()
@@ -26,17 +28,30 @@ object NavSettings {
     private val _bikeMarker = MutableStateFlow(false)
     val bikeMarker = _bikeMarker.asStateFlow()
 
-    fun init(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        _liveTraffic.value = prefs.getBoolean(KEY_LIVE_TRAFFIC, false)
-        _customTrailsEnabled.value = prefs.getBoolean(KEY_CUSTOM_TRAILS, true)
-        _bikeMarker.value = prefs.getBoolean(KEY_BIKE_MARKER, false)
+    private val _mapTheme = MutableStateFlow(MapTheme.AUTO)
+    val mapTheme = _mapTheme.asStateFlow()
+
+    private val _intercomVolume = MutableStateFlow(1.0f)
+    val intercomVolume = _intercomVolume.asStateFlow()
+
+    /** Whether the map should render dark right now, given the current mode + clock. */
+    fun nightActive(theme: MapTheme = _mapTheme.value): Boolean = when (theme) {
+        MapTheme.DAY -> false
+        MapTheme.NIGHT -> true
+        MapTheme.AUTO -> {
+            val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+            hour >= NIGHT_START_HOUR || hour < DAY_START_HOUR
+        }
     }
 
-    fun setLiveTraffic(context: Context, on: Boolean) {
-        _liveTraffic.value = on
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_LIVE_TRAFFIC, on).apply()
+    fun init(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        _customTrailsEnabled.value = prefs.getBoolean(KEY_CUSTOM_TRAILS, true)
+        _bikeMarker.value = prefs.getBoolean(KEY_BIKE_MARKER, false)
+        _mapTheme.value = runCatching {
+            MapTheme.valueOf(prefs.getString(KEY_MAP_THEME, MapTheme.AUTO.name)!!)
+        }.getOrDefault(MapTheme.AUTO)
+        _intercomVolume.value = prefs.getFloat(KEY_INTERCOM_VOLUME, 1.0f)
     }
 
     fun setCustomTrailsEnabled(context: Context, on: Boolean) {
@@ -49,5 +64,18 @@ object NavSettings {
         _bikeMarker.value = on
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_BIKE_MARKER, on).apply()
+    }
+
+    fun setMapTheme(context: Context, theme: MapTheme) {
+        _mapTheme.value = theme
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_MAP_THEME, theme.name).apply()
+    }
+
+    fun setIntercomVolume(context: Context, vol: Float) {
+        _intercomVolume.value = vol
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putFloat(KEY_INTERCOM_VOLUME, vol).apply()
+        IntercomEngine.updateIntercomVolume(vol)
     }
 }

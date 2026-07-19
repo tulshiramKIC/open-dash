@@ -6,6 +6,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +29,7 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.plugins.annotation.LineManager
 import org.maplibre.android.plugins.annotation.LineOptions
+import org.maplibre.android.plugins.annotation.Symbol
 import org.maplibre.android.plugins.annotation.SymbolManager
 import org.maplibre.android.plugins.annotation.SymbolOptions
 import org.maplibre.android.style.layers.FillLayer
@@ -74,6 +76,25 @@ fun rememberDeviceAzimuth(): State<Float> {
 // Shared with OfflineMaps so downloaded tile regions match what the live map requests.
 private const val STYLE_URL = com.example.opendash.data.OfflineMaps.MAP_STYLE_URL
 
+// Night style: OpenFreeMap "dark" — same planet vector source + Noto Sans glyph server as
+// liberty, so offline-downloaded tile regions keep working and symbol text keeps rendering.
+private const val NIGHT_STYLE_URL = "https://tiles.openfreemap.org/styles/dark"
+
+/** True when the map should render in night colors, per the Settings mode + clock.
+ *  AUTO re-evaluates every minute so the 7 pm / 6 am flips happen while the screen is up. */
+@Composable
+fun rememberMapNight(): Boolean {
+    val theme by com.example.opendash.data.NavSettings.mapTheme.collectAsState()
+    var night by remember { mutableStateOf(com.example.opendash.data.NavSettings.nightActive()) }
+    LaunchedEffect(theme) {
+        while (true) {
+            night = com.example.opendash.data.NavSettings.nightActive(theme)
+            kotlinx.coroutines.delay(60_000)
+        }
+    }
+    return night
+}
+
 // Satellite imagery: Esri World Imagery raster tiles — also keyless (attribution required).
 // Satellite mode is a hybrid like Google's: the vector style loads as usual, and this
 // imagery is inserted *below* its label layers — Esri's own label overlays run out of
@@ -95,6 +116,18 @@ private const val DOT_BEAM_ICON = "rider-dot-beam"
 private const val DEST_ICON = "dest-pin"
 private const val STOP_ICON = "stop-pin"
 private const val TRAIL_START_ICON = "trail-start-pin"
+
+// Google-style route colors, sampled from the user's Google Maps screenshots: selected =
+// vivid indigo fill over a darker casing; alternates = light periwinkle over medium
+// periwinkle (never grey — matches Google Maps).
+private const val ROUTE_FILL = "#4008F8"
+private const val ROUTE_CASING = "#0020D0"
+private const val ALT_FILL = "#B8C8F8"
+private const val ALT_CASING = "#8088F8"
+private const val ROUTE_FILL_W = 4.2f
+private const val ROUTE_CASING_W = 6.5f
+private const val ALT_FILL_W = 3.5f
+private const val ALT_CASING_W = 5.5f
 
 // Group Ride peers: a small palette of colored rider dots (color picked by peer-id hash,
 // stable for the whole ride) + a grey one for stale riders.
@@ -136,11 +169,15 @@ fun OpenDashMap(
      * and tapping another calls [onSelectRoute]. Takes precedence over [alternateRoutes].
      */
     allRoutes: List<List<GeoPoint>> = emptyList(),
+    /** Per-segment traffic levels for each of [allRoutes] — colors alternates too. */
+    allRouteCongestions: List<List<Int>> = emptyList(),
     routeDurations: List<String> = emptyList(),
     selectedRouteIndex: Int = 0,
     onSelectRoute: (Int) -> Unit = {},
     /** Satellite imagery basemap instead of the vector street style. */
     satellite: Boolean = false,
+    /** Night basemap (OpenFreeMap dark) instead of the day (liberty) style. */
+    night: Boolean = false,
     compassBottomMarginDp: Int = 16,
     zoom: Double? = null,
     followMode: Boolean = true,
@@ -150,11 +187,17 @@ fun OpenDashMap(
     riderIconScale: Float = 1f,
     /** Place the rider low in the viewport so more map ahead is visible (nav follow mode). */
     cameraAheadOffset: Boolean = false,
+    /** Camera tilt (degrees) in nav follow mode — Google's 3D driving view. 0 = flat top-down. */
+    navTiltDeg: Double = 0.0,
+    /** On-map maneuver callout at the next turn (Google-style white label + arrow). */
+    maneuverPoint: Pair<Double, Double>? = null,
+    maneuverType: com.example.opendash.dash.nav.ManeuverType? = null,
+    maneuverRoad: String? = null,
     /** Overrides the MARKER arrow direction only (camera keeps [riderBearing]). Pass the
      *  device compass azimuth while stationary for the Google-blue-dot effect. */
     markerBearing: Float? = null,
     /** Nav-mode rider marker style: true = top-down bike, false = classic chevron arrow. */
-    bikeMarker: Boolean = true,
+    bikeMarker: Boolean = false,
     recordedPoints: List<GeoPoint> = emptyList(),
     /** Group Ride: other riders shown as named colored dots (grey when stale). */
     peers: List<com.example.opendash.data.GroupRide.Peer> = emptyList(),
@@ -169,7 +212,10 @@ fun OpenDashMap(
 
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var lineMgr by remember { mutableStateOf<LineManager?>(null) }
+    // symbolMgr = MAP-aligned (rider marker rotates with the map to show heading).
+    // labelMgr  = VIEWPORT-aligned (text callouts stay upright regardless of map rotation).
     var symbolMgr by remember { mutableStateOf<SymbolManager?>(null) }
+    var labelMgr by remember { mutableStateOf<SymbolManager?>(null) }
     var styleReady by remember { mutableStateOf(false) }
     var destroyed by remember { mutableStateOf(false) }
 
@@ -177,6 +223,15 @@ fun OpenDashMap(
     val routesRef = remember { mutableStateOf<List<List<GeoPoint>>>(emptyList()) }
     routesRef.value = allRoutes
     val selectCb = androidx.compose.runtime.rememberUpdatedState(onSelectRoute)
+    val selectedRef = androidx.compose.runtime.rememberUpdatedState(selectedRouteIndex)
+    // Duration bubbles (symbol → route index), repositioned on every camera idle so the
+    // label stays on the visible distinct stretch of its route — Google-style.
+    val bubbleSyms = remember { mutableStateOf<List<Pair<Symbol, Int>>>(emptyList()) }
+
+    // Remembered lists of active map elements to prevent laggy full redraws
+    val routeLines = remember { mutableListOf<org.maplibre.android.plugins.annotation.Line>() }
+    val staticSymbols = remember { mutableListOf<org.maplibre.android.plugins.annotation.Symbol>() }
+    val dynamicSymbols = remember { mutableListOf<org.maplibre.android.plugins.annotation.Symbol>() }
 
     // Update compass margins dynamically when the bottom offset changes.
     LaunchedEffect(compassBottomMarginDp, map) {
@@ -226,50 +281,95 @@ fun OpenDashMap(
             m.addOnMapClickListener { point ->
                 val routes = routesRef.value
                 if (routes.size <= 1) return@addOnMapClickListener false
+                val tapScreen = m.projection.toScreenLocation(point)
                 var best = -1
                 var bestD = Double.MAX_VALUE
-                val tap = GeoPoint(point.latitude, point.longitude)
+                val density = context.resources.displayMetrics.density
                 
-                // Prioritize checking if the click is near the midpoint (bubble) of any route
-                routes.forEachIndexed { i, geo ->
-                    if (geo.size >= 2) {
-                        val mid = geo[geo.size / 2]
-                        val distToMid = GeoPoint.distMeters(tap, mid)
-                        if (distToMid < 75.0) { // tapped on or very close to the bubble
-                            best = i
-                            bestD = distToMid
-                        }
+                // 1. Check distance to visible bubbles first (in screen pixels)
+                bubbleSyms.value.forEach { (sym, i) ->
+                    val pos = sym.latLng
+                    val symScreen = m.projection.toScreenLocation(pos)
+                    val dx = tapScreen.x - symScreen.x
+                    val dy = tapScreen.y - symScreen.y
+                    val distPx = Math.hypot(dx.toDouble(), dy.toDouble())
+                    val threshold = 36.0 * density // 36 dp tap target radius
+                    if (distPx < threshold && distPx < bestD) {
+                        best = i
+                        bestD = distPx
                     }
                 }
                 
+                // 2. If not on a bubble, check distance to route lines (in screen pixels)
                 if (best == -1) {
-                    // Fallback to checking line distance
                     routes.forEachIndexed { i, geo ->
-                        val step = (geo.size / 200).coerceAtLeast(1)
+                        val step = (geo.size / 150).coerceAtLeast(1)
                         for (idx in geo.indices step step) {
-                            val dd = GeoPoint.distMeters(tap, geo[idx])
-                            if (dd < bestD) { bestD = dd; best = i }
+                            val pt = geo[idx]
+                            val ptScreen = m.projection.toScreenLocation(LatLng(pt.lat, pt.lng))
+                            val dx = tapScreen.x - ptScreen.x
+                            val dy = tapScreen.y - ptScreen.y
+                            val distPx = Math.hypot(dx.toDouble(), dy.toDouble())
+                            if (distPx < bestD) {
+                                bestD = distPx
+                                best = i
+                            }
                         }
                     }
                 }
-                if (best >= 0 && bestD < 500.0) { selectCb.value(best); true } else false
+                
+                val finalThreshold = 28.0 * density // tap must be within 28 dp of the route/bubble
+                if (best >= 0 && bestD < finalThreshold) {
+                    selectCb.value(best)
+                    true
+                } else {
+                    false
+                }
+            }
+            // Keep duration bubbles pinned to the visible distinct part of their route as
+            // the user pans/zooms (Google moves its labels with the viewport too).
+            m.addOnCameraIdleListener {
+                val routes = routesRef.value
+                if (routes.size <= 1 || bubbleSyms.value.isEmpty()) return@addOnCameraIdleListener
+                val lbl = labelMgr ?: return@addOnCameraIdleListener
+                val bounds = runCatching { m.projection.visibleRegion.latLngBounds }.getOrNull()
+                    ?: return@addOnCameraIdleListener
+                val sel = selectedRef.value
+                // Reposition each bubble to its route's visible distinct stretch; if two would
+                // land on top of each other, nudge the later one along its own route to a free
+                // spot so BOTH stay visible (Google-style), instead of overlapping.
+                val placed = mutableListOf<GeoPoint>()
+                bubbleSyms.value.sortedByDescending { it.second == sel }.forEach { (sym, i) ->
+                    val geo = routes.getOrNull(i) ?: return@forEach
+                    if (geo.size < 2) return@forEach
+                    val other = if (i == sel) routes.firstOrNull { it !== geo && it.size >= 2 }
+                        else routes.getOrNull(sel)
+                    var anchor = bubbleAnchor(geo, other, bounds) ?: bubbleAnchor(geo, other) ?: geo[geo.size / 2]
+                    if (i != sel && placed.any { GeoPoint.distMeters(it, anchor) < 120.0 }) {
+                        anchor = freeAnchorAlong(geo, placed, bounds) ?: anchor
+                    }
+                    placed += anchor
+                    sym.latLng = LatLng(anchor.lat, anchor.lng)
+                    runCatching { lbl.update(sym) }
+                }
             }
             map = m
         }
     }
 
-    // (Re)apply the basemap style — runs on first map-ready and on satellite toggle.
+    // (Re)apply the basemap style — runs on first map-ready and on satellite/night toggles.
     // Annotation managers are bound to a style, so they're rebuilt on every swap.
-    LaunchedEffect(map, satellite) {
+    LaunchedEffect(map, satellite, night) {
         val m = map ?: return@LaunchedEffect
         styleReady = false
         runCatching { lineMgr?.onDestroy() }
         runCatching { symbolMgr?.onDestroy() }
-        lineMgr = null; symbolMgr = null
-        m.setStyle(Style.Builder().fromUri(STYLE_URL)) { style ->
+        runCatching { labelMgr?.onDestroy() }
+        lineMgr = null; symbolMgr = null; labelMgr = null
+        m.setStyle(Style.Builder().fromUri(if (night) NIGHT_STYLE_URL else STYLE_URL)) { style ->
             if (destroyed) return@setStyle
             if (satellite) addSatelliteImagery(style)
-            disable3dBuildings(style)
+            disable3dBuildings(style, night)
             style.addImage(RIDER_ICON, bikeMarkerBitmap(context))
             style.addImage(CHEVRON_ICON, chevronBitmap())
             style.addImage(DOT_ICON, riderDotBitmap())
@@ -278,7 +378,10 @@ fun OpenDashMap(
             style.addImage(DEST_ICON, destPinBitmap())
             style.addImage(STOP_ICON, stopPinBitmap())
             style.addImage(TRAIL_START_ICON, trailStartPinBitmap())
-            lineMgr = LineManager(mapView, m, style)
+            lineMgr = LineManager(mapView, m, style).apply {
+                // Round ends so congestion segment runs join seamlessly at their seams.
+                lineCap = org.maplibre.android.style.layers.Property.LINE_CAP_ROUND
+            }
             symbolMgr = SymbolManager(mapView, m, style).apply {
                 iconAllowOverlap = true; iconIgnorePlacement = true
                 textAllowOverlap = true; textIgnorePlacement = true
@@ -286,17 +389,34 @@ fun OpenDashMap(
                 // they stay correct whether the camera is north-up or heading-up.
                 iconRotationAlignment = org.maplibre.android.style.layers.Property.ICON_ROTATION_ALIGNMENT_MAP
             }
+            // Labels/callouts: viewport-aligned so their text stays upright and readable no
+            // matter how the map is rotated (created AFTER symbolMgr so it draws on top).
+            labelMgr = SymbolManager(mapView, m, style).apply {
+                iconAllowOverlap = true; iconIgnorePlacement = true
+                textAllowOverlap = true; textIgnorePlacement = true
+                iconRotationAlignment = org.maplibre.android.style.layers.Property.ICON_ROTATION_ALIGNMENT_VIEWPORT
+            }
             styleReady = true
         }
     }
 
-    // Redraw route + markers whenever the data or mode changes.
-    LaunchedEffect(styleReady, routePoints, routeCongestion, alternateRoutes, allRoutes, routeDurations, selectedRouteIndex, dest, stops, riderLat, riderLng, riderBearing, markerBearing, bikeMarker, navMode, recordedPoints, isCustomTrail, trailStart, showTravelledGrey, peers) {
+    // Redraw static route + markers only when route configurations or static elements change.
+    val routeKey = if (showTravelledGrey) Pair(riderLat, riderLng) else null
+    LaunchedEffect(
+        styleReady, routePoints, routeCongestion, alternateRoutes, allRoutes,
+        allRouteCongestions, routeDurations, selectedRouteIndex, dest, stops,
+        recordedPoints, isCustomTrail, trailStart, showTravelledGrey, routeKey
+    ) {
         if (destroyed) return@LaunchedEffect
         val style = map?.style ?: return@LaunchedEffect
         val lm = lineMgr ?: return@LaunchedEffect
-        val sm = symbolMgr ?: return@LaunchedEffect
-        lm.deleteAll(); sm.deleteAll()
+        val lbl = labelMgr ?: return@LaunchedEffect
+        
+        runCatching { lm.delete(routeLines.toList()) }
+        routeLines.clear()
+        runCatching { lbl.delete(staticSymbols.toList()) }
+        staticSymbols.clear()
+        bubbleSyms.value = emptyList()
 
         if (isCustomTrail && trailStart != null) {
             if (routePoints.size >= 2) {
@@ -313,58 +433,56 @@ fun OpenDashMap(
                     if (riderIdx < trailStartIdx) {
                         // Travelled standard route: grey
                         if (riderIdx > 0) {
-                            lm.create(
+                            routeLines += lm.create(
                                 LineOptions().withLatLngs(routePoints.subList(0, riderIdx + 1).map { LatLng(it.lat, it.lng) })
-                                    .withLineColor("#9AA0A6").withLineWidth(5.5f)
+                                    .withLineColor("#9AA0A6").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f)
                             )
                         }
                         // Custom trail: red
-                        lm.create(
+                        routeLines += lm.create(
                             LineOptions().withLatLngs(routePoints.subList(trailStartIdx, routePoints.size).map { LatLng(it.lat, it.lng) })
-                                .withLineColor("#E5341F").withLineWidth(5.5f)
+                                .withLineColor("#E5341F").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f)
                         )
                         // Remaining standard route: blue
-                        lm.create(
+                        routeLines += lm.create(
                             LineOptions().withLatLngs(routePoints.subList(riderIdx, trailStartIdx + 1).map { LatLng(it.lat, it.lng) })
-                                .withLineColor("#4285F4").withLineWidth(5.5f)
+                                .withLineColor("#4285F4").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f)
                         )
                     } else {
                         // Rider is already on the trail
                         // Travelled portion (standard route + travelled custom trail): grey
                         if (riderIdx > 0) {
-                            lm.create(
+                            routeLines += lm.create(
                                 LineOptions().withLatLngs(routePoints.subList(0, riderIdx + 1).map { LatLng(it.lat, it.lng) })
-                                    .withLineColor("#9AA0A6").withLineWidth(5.5f)
+                                    .withLineColor("#9AA0A6").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f)
                             )
                         }
                         // Remaining custom trail: red
-                        lm.create(
+                        routeLines += lm.create(
                             LineOptions().withLatLngs(routePoints.subList(riderIdx, routePoints.size).map { LatLng(it.lat, it.lng) })
-                                .withLineColor("#E5341F").withLineWidth(5.5f)
+                                .withLineColor("#E5341F").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f)
                         )
                     }
                 } else {
                     // No rider location yet: draw custom trail in red first, then standard route in blue on top
-                    lm.create(
+                    routeLines += lm.create(
                         LineOptions().withLatLngs(routePoints.subList(trailStartIdx, routePoints.size).map { LatLng(it.lat, it.lng) })
-                            .withLineColor("#E5341F").withLineWidth(5.5f)
+                            .withLineColor("#E5341F").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f)
                     )
                     if (trailStartIdx > 0) {
-                        lm.create(
+                        routeLines += lm.create(
                             LineOptions().withLatLngs(routePoints.subList(0, trailStartIdx + 1).map { LatLng(it.lat, it.lng) })
-                                .withLineColor("#4285F4").withLineWidth(5.5f)
+                                .withLineColor("#4285F4").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f)
                         )
                     }
                 }
             }
         } else if (allRoutes.isNotEmpty()) {
-            // Multi-route selection mode: grey alternates, colored selected, duration bubbles.
+            // Multi-route selection mode: light-blue alternates under the deep-blue selected
+            // route (Google-style, both with casing), plus duration bubbles.
             allRoutes.forEachIndexed { i, geo ->
                 if (i != selectedRouteIndex && geo.size >= 2) {
-                    lm.create(
-                        LineOptions().withLatLngs(geo.map { LatLng(it.lat, it.lng) })
-                            .withLineColor("#9AA0A6").withLineWidth(4.0f)
-                    )
+                    routeLines += drawAlternateRoute(lm, geo, allRouteCongestions.getOrNull(i) ?: emptyList())
                 }
             }
             allRoutes.getOrNull(selectedRouteIndex)?.let { sel ->
@@ -376,46 +494,65 @@ fun OpenDashMap(
                     if (idx > 0 && GeoPoint.distMeters(riderGeo, sel[idx]) <= 50.0) idx else 0
                 } else 0
                 if (splitIdx > 0) {
-                    lm.create(
+                    routeLines += lm.create(
                         LineOptions().withLatLngs(sel.subList(0, splitIdx + 1).map { LatLng(it.lat, it.lng) })
-                            .withLineColor("#9AA0A6").withLineWidth(5.5f)
+                            .withLineColor("#9AA0A6").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f)
                     )
                     val aheadCongestion =
                         if (routeCongestion.size == sel.size - 1) routeCongestion.subList(splitIdx, routeCongestion.size)
                         else emptyList()
-                    drawColoredRoute(lm, sel.subList(splitIdx, sel.size), aheadCongestion)
+                    routeLines += drawColoredRoute(lm, sel.subList(splitIdx, sel.size), aheadCongestion)
                 } else {
-                    drawColoredRoute(lm, sel, routeCongestion)
+                    routeLines += drawColoredRoute(lm, sel, routeCongestion)
                 }
             }
-            // Draw duration bubbles at the midpoints of the routes
-            allRoutes.forEachIndexed { i, geo ->
-                if (geo.size >= 2) {
-                    val durationText = routeDurations.getOrNull(i)
-                    if (durationText != null) {
-                        val midPoint = geo[geo.size / 2]
-                        val isSelected = (i == selectedRouteIndex)
-                        val bubbleBitmap = durationBubbleBitmap(context, durationText, isSelected)
-                        val iconId = "bubble_${i}_${isSelected}"
-                        style.addImage(iconId, bubbleBitmap)
-                        sm.create(
-                            SymbolOptions()
-                                .withLatLng(LatLng(midPoint.lat, midPoint.lng))
-                                .withIconImage(iconId)
-                                .withIconSize(1.0f)
-                                .withSymbolSortKey(if (isSelected) 10f else 1f)
-                        )
-                    }
+            // Duration bubbles pinned to each route's DISTINCT stretch (Google-style) —
+            // the plain midpoint usually lands on road shared with the selected route. Place
+            // the selected route first, then skip any alternate whose bubble would land on top
+            // of an already-placed one (near-identical routes → don't stack two labels).
+            val createdBubbles = mutableListOf<Pair<Symbol, Int>>()
+            val placedAnchors = mutableListOf<GeoPoint>()
+            val order = (0 until allRoutes.size).sortedByDescending { it == selectedRouteIndex }
+            for (i in order) {
+                val geo = allRoutes[i]
+                if (geo.size < 2) continue
+                val durationText = routeDurations.getOrNull(i) ?: continue
+                val isSelected = (i == selectedRouteIndex)
+                val compareTo = if (isSelected)
+                    allRoutes.firstOrNull { it !== geo && it.size >= 2 }
+                else allRoutes.getOrNull(selectedRouteIndex)
+                val viewBounds = runCatching { map?.projection?.visibleRegion?.latLngBounds }.getOrNull()
+                var anchor = bubbleAnchor(geo, compareTo, viewBounds)
+                    ?: bubbleAnchor(geo, compareTo)
+                    ?: geo[geo.size / 2]
+                // Alternates: if the bubble collides with one already placed, slide it along
+                // its own route to a free spot so both stay visible (never overlap/hide).
+                if (!isSelected && placedAnchors.any { GeoPoint.distMeters(it, anchor) < 120.0 }) {
+                    anchor = freeAnchorAlong(geo, placedAnchors, viewBounds) ?: anchor
                 }
+                placedAnchors += anchor
+                val bubbleBitmap = durationBubbleBitmap(context, durationText, isSelected)
+                val iconId = "bubble_${i}_${isSelected}"
+                style.addImage(iconId, bubbleBitmap)
+                val sym = lbl.create(
+                    SymbolOptions()
+                        .withLatLng(LatLng(anchor.lat, anchor.lng))
+                        .withIconImage(iconId)
+                        .withIconSize(1.0f)
+                        // Tail tip sits at the bitmap's bottom-left — anchor there
+                        // so the callout points at the route.
+                        .withIconAnchor(org.maplibre.android.style.layers.Property.ICON_ANCHOR_BOTTOM_LEFT)
+                        .withSymbolSortKey(if (isSelected) 10f else 1f)
+                )
+                staticSymbols += sym
+                createdBubbles += sym to i
             }
+            bubbleSyms.value = createdBubbles
         } else {
             // Single-route mode (dash view): alternates + selected + traffic coloring.
             alternateRoutes.forEach { alt ->
                 if (alt.size >= 2) {
-                    lm.create(
-                        LineOptions().withLatLngs(alt.map { LatLng(it.lat, it.lng) })
-                            .withLineColor("#9AA0A6").withLineWidth(4.0f)
-                    )
+                    routeLines += drawAlternateRoute(lm, alt)
                 }
             }
             if (routePoints.size >= 2) {
@@ -426,83 +563,110 @@ fun OpenDashMap(
                     val dist = GeoPoint.distMeters(riderGeo, routePoints[splitIdx])
                     if (splitIdx > 0 && dist <= 50.0) {
                         val travelled = routePoints.subList(0, splitIdx + 1)
-                        lm.create(LineOptions().withLatLngs(travelled.map { LatLng(it.lat, it.lng) }).withLineColor("#9AA0A6").withLineWidth(5.5f))
+                        routeLines += lm.create(LineOptions().withLatLngs(travelled.map { LatLng(it.lat, it.lng) }).withLineColor("#9AA0A6").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f))
                         val remaining = routePoints.subList(splitIdx, routePoints.size)
                         val aheadCongestion =
                             if (routeCongestion.size == routePoints.size - 1) routeCongestion.subList(splitIdx, routeCongestion.size)
                             else emptyList()
-                        drawColoredRoute(lm, remaining, aheadCongestion)
+                        routeLines += drawColoredRoute(lm, remaining, aheadCongestion)
                     } else {
-                        drawColoredRoute(lm, routePoints, routeCongestion)
+                        routeLines += drawColoredRoute(lm, routePoints, routeCongestion)
                     }
                 } else {
-                    drawColoredRoute(lm, routePoints, routeCongestion)
+                    routeLines += drawColoredRoute(lm, routePoints, routeCongestion)
                 }
             }
         }
         if (recordedPoints.size >= 2) {
-            lm.create(
+            routeLines += lm.create(
                 LineOptions().withLatLngs(recordedPoints.map { LatLng(it.lat, it.lng) })
-                    .withLineColor("#E5341F").withLineWidth(5.5f)
+                    .withLineColor("#E5341F").withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(5.5f)
             )
             // Draw a dedicated start pin at the trail origin so the rider dot
             // icon doesn't appear "stuck" at the starting location.
             val startPt = recordedPoints.first()
-            sm.create(
+            staticSymbols += lbl.create(
                 SymbolOptions().withLatLng(LatLng(startPt.lat, startPt.lng))
                     .withIconImage(TRAIL_START_ICON).withIconSize(1.1f)
             )
         }
         if (isCustomTrail && trailStart != null) {
-            sm.create(
+            staticSymbols += lbl.create(
                 SymbolOptions().withLatLng(LatLng(trailStart.first, trailStart.second))
                     .withIconImage(TRAIL_START_ICON).withIconSize(1.1f)
             )
         }
-        dest?.let { sm.create(SymbolOptions().withLatLng(LatLng(it.first, it.second)).withIconImage(DEST_ICON).withIconSize(1.1f)) }
+        dest?.let { staticSymbols += lbl.create(SymbolOptions().withLatLng(LatLng(it.first, it.second)).withIconImage(DEST_ICON).withIconSize(1.1f)) }
         stops.forEach { pt ->
-            sm.create(
+            staticSymbols += lbl.create(
                 SymbolOptions().withLatLng(LatLng(pt.lat, pt.lng))
                     .withIconImage(STOP_ICON).withIconSize(1.1f)
             )
         }
+    }
+
+    // Redraw dynamic markers (rider dot, peers, turn-by-turn maneuvers) on every coordinate tick.
+    LaunchedEffect(styleReady, riderLat, riderLng, riderBearing, markerBearing, bikeMarker, navMode, peers, maneuverPoint, maneuverRoad, maneuverType) {
+        if (destroyed) return@LaunchedEffect
+        val style = map?.style ?: return@LaunchedEffect
+        val sm = symbolMgr ?: return@LaunchedEffect
+        val lbl = labelMgr ?: return@LaunchedEffect
+
+        runCatching { sm.delete(dynamicSymbols.toList()) }
+        runCatching { lbl.delete(dynamicSymbols.toList()) }
+        dynamicSymbols.clear()
+
+        // 1. On-map maneuver callout at the next turn (Google-style): white arrow + road label.
+        if (maneuverPoint != null && !maneuverRoad.isNullOrBlank()) {
+            val iconId = "maneuver-${maneuverType?.name}-$maneuverRoad"
+            if (style.getImage(iconId) == null) {
+                style.addImage(iconId, maneuverLabelBitmap(context, maneuverRoad, maneuverType))
+            }
+            dynamicSymbols += lbl.create(
+                SymbolOptions()
+                    .withLatLng(LatLng(maneuverPoint.first, maneuverPoint.second))
+                    .withIconImage(iconId)
+                    .withIconSize(1.0f)
+                    .withIconAnchor("bottom")
+                    .withSymbolSortKey(8f),
+            )
+        }
+
+        // 2. Rider marker: navigation chevron or standard location blue dot
         if (riderLat != null && riderLng != null) {
-            // Nav: heading chevron. Otherwise: Google-style "you are here" blue dot.
-            if (navMode) sm.create(
+            val sym = if (navMode) sm.create(
                 SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
                     .withIconImage(if (bikeMarker) RIDER_ICON else CHEVRON_ICON)
                     .withIconRotate(markerBearing ?: riderBearing)
                     .withIconSize(riderIconScale)
+                    .withIconAnchor(if (bikeMarker) org.maplibre.android.style.layers.Property.ICON_ANCHOR_TOP else org.maplibre.android.style.layers.Property.ICON_ANCHOR_CENTER)
             ) else sm.create(
                 SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
                     .withIconImage(if (markerBearing != null) DOT_BEAM_ICON else DOT_ICON)
                     .withIconRotate(markerBearing ?: 0f)
                     .withIconSize(riderIconScale)
             )
+            dynamicSymbols += sym
         }
 
-        // Group Ride peers: delivery-app-style pin — colored teardrop with the rider's
-        // initial, name labeled beneath the tip. Grey pin when the rider went stale.
-        peers.forEach { peer ->
+        // 3. Group Ride peers
+        peers.filter { it.lat != 0.0 && it.lng != 0.0 }.forEach { peer ->
             val colorIdx = Math.abs(peer.id.hashCode()) % PEER_COLORS.size
             val color = if (peer.isStale) 0xFF9AA0A6.toInt() else PEER_COLORS[colorIdx]
             val initial = peer.name.trim().take(1).uppercase().ifBlank { "?" }
             val iconId = "$PEER_ICON_PREFIX$colorIdx-$initial-${peer.isStale}"
             if (style.getImage(iconId) == null) style.addImage(iconId, peerPinBitmap(color, initial))
-            // Label: name + live distance from me (straight-line), updating as either moves.
             val label = if (riderLat != null && riderLng != null) {
                 val d = GeoPoint.distMeters(GeoPoint(riderLat, riderLng), GeoPoint(peer.lat, peer.lng))
                 peer.name + "\n" + (if (d >= 1000) "%.1f km".format(d / 1000) else "${d.toInt()} m")
             } else peer.name
-            sm.create(
+            dynamicSymbols += lbl.create(
                 SymbolOptions().withLatLng(LatLng(peer.lat, peer.lng))
                     .withIconImage(iconId)
                     .withIconSize(1.0f)
-                    .withIconAnchor("bottom")   // pin tip marks the exact position
+                    .withIconAnchor("bottom")
                     .withSymbolSortKey(5f)
                     .withTextField(label)
-                    // Font MUST exist in the style's glyph set (liberty = Noto Sans only);
-                    // an unknown font 404s and silently kills the whole symbol layer.
                     .withTextFont(arrayOf("Noto Sans Bold"))
                     .withTextSize(12f)
                     .withTextColor(if (peer.isStale) "#9AA0A6" else "#FFFFFF")
@@ -573,7 +737,7 @@ fun OpenDashMap(
                 val z = zoom ?: if (navMode) NAV_ZOOM else FOLLOW_ZOOM
                 val topPad = if (cameraAheadOffset) mapView.height * 0.55 else 0.0
                 val pos = if (navMode)
-                    CameraPosition.Builder().target(target).zoom(z).tilt(NAV_TILT).bearing(riderBearing.toDouble())
+                    CameraPosition.Builder().target(target).zoom(z).tilt(navTiltDeg).bearing(riderBearing.toDouble())
                         .padding(0.0, topPad, 0.0, 0.0).build()
                 else
                     CameraPosition.Builder().target(target).zoom(z).tilt(0.0).bearing(0.0)
@@ -613,7 +777,7 @@ fun OpenDashMap(
             CameraPosition.Builder()
                 .target(target)
                 .zoom(z)
-                .tilt(NAV_TILT)
+                .tilt(navTiltDeg)
                 .bearing(riderBearing.toDouble())
                 .padding(0.0, topPad, 0.0, 0.0)
                 .build()
@@ -660,8 +824,10 @@ private fun addSatelliteImagery(style: Style) {
     }
 }
 
-private fun disable3dBuildings(style: Style) {
+private fun disable3dBuildings(style: Style, night: Boolean = false) {
     val isSatellite = style.getLayer(SATELLITE_LAYER_ID) != null
+    val flatFill = if (night) android.graphics.Color.rgb(44, 44, 46)
+                   else android.graphics.Color.rgb(218, 218, 218)
     val layers = ArrayList(style.layers)
     for (layer in layers) {
         if (layer.javaClass.simpleName == "FillExtrusionLayer" && layer is org.maplibre.android.style.layers.FillExtrusionLayer) {
@@ -676,7 +842,7 @@ private fun disable3dBuildings(style: Style) {
                     if (filter != null) withFilter(filter)
                     setProperties(
                         PropertyFactory.visibility(if (isSatellite) "none" else "visible"),
-                        PropertyFactory.fillColor(android.graphics.Color.rgb(218, 218, 218)),
+                        PropertyFactory.fillColor(flatFill),
                         PropertyFactory.fillOpacity(0.8f)
                     )
                 }
@@ -695,12 +861,39 @@ private fun disable3dBuildings(style: Style) {
 private fun congestionColor(level: Int): String = when (level) {
     1 -> "#F4A000"
     2 -> "#E5341F"
-    else -> "#4285F4"
+    else -> ROUTE_FILL
 }
 
-/** Draw a route line, colored by [congestion] runs when present, else solid blue. */
-private fun drawColoredRoute(lm: LineManager, points: List<GeoPoint>, congestion: List<Int>) {
-    if (points.size < 2) return
+private fun drawAlternateRoute(lm: LineManager, points: List<GeoPoint>, congestion: List<Int> = emptyList()): List<org.maplibre.android.plugins.annotation.Line> {
+    val created = mutableListOf<org.maplibre.android.plugins.annotation.Line>()
+    val latLngs = points.map { LatLng(it.lat, it.lng) }
+    created += lm.create(LineOptions().withLatLngs(latLngs).withLineColor(ALT_CASING).withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(ALT_CASING_W))
+    created += lm.create(LineOptions().withLatLngs(latLngs).withLineColor(ALT_FILL).withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(ALT_FILL_W))
+    if (congestion.size == points.size - 1 && congestion.any { it > 0 }) {
+        var start = 0
+        while (start < congestion.size) {
+            var end = start + 1
+            while (end < congestion.size && congestion[end] == congestion[start]) end++
+            if (congestion[start] > 0) {
+                created += lm.create(
+                    LineOptions().withLatLngs((start..end).map { latLngs[it] })
+                        .withLineColor(congestionColor(congestion[start]))
+                        .withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND)
+                        .withLineWidth(ALT_FILL_W)
+                )
+            }
+            start = end
+        }
+    }
+    return created
+}
+
+/** Draw the selected route: dark casing under a blue fill, colored by [congestion] runs. */
+private fun drawColoredRoute(lm: LineManager, points: List<GeoPoint>, congestion: List<Int>): List<org.maplibre.android.plugins.annotation.Line> {
+    val created = mutableListOf<org.maplibre.android.plugins.annotation.Line>()
+    if (points.size < 2) return created
+    val latLngs = points.map { LatLng(it.lat, it.lng) }
+    created += lm.create(LineOptions().withLatLngs(latLngs).withLineColor(ROUTE_CASING).withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(ROUTE_CASING_W))
     val hasTraffic = congestion.size == points.size - 1 && congestion.any { it > 0 }
     if (hasTraffic) {
         var start = 0
@@ -708,37 +901,61 @@ private fun drawColoredRoute(lm: LineManager, points: List<GeoPoint>, congestion
             var end = start + 1
             while (end < congestion.size && congestion[end] == congestion[start]) end++
             val pts = (start..end).map { LatLng(points[it].lat, points[it].lng) }
-            lm.create(LineOptions().withLatLngs(pts).withLineColor(congestionColor(congestion[start])).withLineWidth(6.0f))
+            created += lm.create(LineOptions().withLatLngs(pts).withLineColor(congestionColor(congestion[start])).withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(ROUTE_FILL_W))
             start = end
         }
     } else {
-        lm.create(LineOptions().withLatLngs(points.map { LatLng(it.lat, it.lng) }).withLineColor("#4285F4").withLineWidth(5.5f))
+        created += lm.create(LineOptions().withLatLngs(latLngs).withLineColor(ROUTE_FILL).withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND).withLineWidth(ROUTE_FILL_W))
     }
+    return created
 }
 
-/** Google-style route time bubble: rounded pill with the duration text. */
+/** Google-style route time callout: rounded rectangle with a pointed tail at the
+ *  bottom-left (the tail tip is the map anchor) and a soft drop shadow. Selected =
+ *  navy with white text; alternate = white with dark text. */
 private fun durationBubbleBitmap(context: android.content.Context, text: String, selected: Boolean): Bitmap {
     val d = context.resources.displayMetrics.density
-    val pad = 9f * d
-    val textSize = 13f * d
+    val padH = 10f * d
+    val padV = 7f * d
+    val textSize = 13.5f * d
+    val tailH = 7f * d
+    val corner = 7f * d
+    val shadowPad = 4f * d
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         this.textSize = textSize
-        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
     }
     val tw = paint.measureText(text)
-    val w = (tw + pad * 2).toInt()
-    val h = (textSize + pad * 1.5f).toInt()
+    val rectW = tw + padH * 2
+    val rectH = textSize + padV * 2
+    val w = (rectW + shadowPad * 2).toInt()
+    val h = (rectH + tailH + shadowPad * 2).toInt()
     val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val c = Canvas(bmp)
-    val r = h / 2f
-    // Bubble background.
-    paint.color = if (selected) android.graphics.Color.rgb(66, 133, 244) else android.graphics.Color.rgb(48, 49, 52)
-    c.drawRoundRect(0f, 0f, w.toFloat(), h.toFloat(), r, r, paint)
-    // Text.
-    paint.color = if (selected) android.graphics.Color.WHITE else android.graphics.Color.rgb(210, 212, 216)
+    val left = shadowPad
+    val top = shadowPad
+
+    val bubble = Path().apply {
+        addRoundRect(
+            android.graphics.RectF(left, top, left + rectW, top + rectH),
+            corner, corner, Path.Direction.CW,
+        )
+        // Pointed tail off the bottom-left corner; its tip is what anchors to the route.
+        moveTo(left + 4f * d, top + rectH - 1f * d)
+        lineTo(left + 1.5f * d, top + rectH + tailH)
+        lineTo(left + 16f * d, top + rectH - 1f * d)
+        close()
+    }
+    val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = if (selected) android.graphics.Color.rgb(0, 32, 208) else android.graphics.Color.WHITE
+        setShadowLayer(2.5f * d, 0f, 1.2f * d, android.graphics.Color.argb(80, 0, 0, 0))
+    }
+    c.drawPath(bubble, bg)
+
+    paint.color = if (selected) android.graphics.Color.WHITE else android.graphics.Color.rgb(32, 33, 36)
     val fm = paint.fontMetrics
-    val ty = h / 2f - (fm.ascent + fm.descent) / 2f
-    c.drawText(text, pad, ty, paint)
+    val ty = top + rectH / 2f - (fm.ascent + fm.descent) / 2f
+    c.drawText(text, left + padH, ty, paint)
     return bmp
 }
 
@@ -922,6 +1139,100 @@ private fun peerPinBitmap(color: Int, initial: String): Bitmap {
     return bmp
 }
 
+/** Google-style on-map maneuver callout: white rounded pill with a turn-arrow glyph and the
+ *  road name, a little tail at the bottom pointing to the turn location. */
+private fun maneuverLabelBitmap(
+    context: Context,
+    road: String,
+    type: com.example.opendash.dash.nav.ManeuverType?,
+): Bitmap {
+    val d = context.resources.displayMetrics.density
+    val padH = 12f * d; val padV = 8f * d; val arrow = 22f * d; val gap = 7f * d
+    val tail = 9f * d; val corner = 12f * d; val pad = 5f * d
+    val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(32, 33, 36)
+        textSize = 15f * d
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+    }
+    val maxText = 190f * d
+    val label = run {
+        if (text.measureText(road) <= maxText) road else {
+            var s = road
+            while (s.length > 4 && text.measureText("$s…") > maxText) s = s.dropLast(1)
+            "$s…"
+        }
+    }
+    val tw = text.measureText(label)
+    val rectW = padH + arrow + gap + tw + padH
+    val rectH = maxOf(arrow, text.textSize) + padV * 2
+    val w = (rectW + pad * 2).toInt()
+    val h = (rectH + tail + pad * 2).toInt()
+    val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val left = pad; val top = pad
+    val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        setShadowLayer(3f * d, 0f, 1.5f * d, android.graphics.Color.argb(90, 0, 0, 0))
+    }
+    val body = Path().apply {
+        addRoundRect(android.graphics.RectF(left, top, left + rectW, top + rectH), corner, corner, Path.Direction.CW)
+        val cx = left + rectW / 2f
+        moveTo(cx - 8f * d, top + rectH - 1f)
+        lineTo(cx, top + rectH + tail)
+        lineTo(cx + 8f * d, top + rectH - 1f)
+        close()
+    }
+    c.drawPath(body, bg)
+    // Turn-arrow glyph in Google blue.
+    val ax = left + padH + arrow / 2f
+    val ay = top + rectH / 2f
+    drawTurnGlyph(c, ax, ay, arrow, type, android.graphics.Color.rgb(26, 115, 232), 3f * d)
+    // Road text.
+    val fm = text.fontMetrics
+    c.drawText(label, left + padH + arrow + gap, ay - (fm.ascent + fm.descent) / 2f, text)
+    return bmp
+}
+
+/** Minimal turn arrow centered at (cx,cy) within [size], matching maneuver type. */
+private fun drawTurnGlyph(
+    c: Canvas, cx: Float, cy: Float, size: Float,
+    type: com.example.opendash.dash.nav.ManeuverType?, color: Int, stroke: Float,
+) {
+    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color; style = Paint.Style.STROKE; strokeWidth = stroke
+        strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+    }
+    val s = size * 0.42f
+    val path = Path()
+    when (type) {
+        com.example.opendash.dash.nav.ManeuverType.TURN_LEFT,
+        com.example.opendash.dash.nav.ManeuverType.SHARP_LEFT,
+        com.example.opendash.dash.nav.ManeuverType.SLIGHT_LEFT -> {
+            path.moveTo(cx + s * 0.5f, cy + s); path.lineTo(cx + s * 0.5f, cy - s * 0.1f)
+            path.lineTo(cx - s * 0.6f, cy - s * 0.1f)
+            path.moveTo(cx - s * 0.2f, cy - s * 0.6f); path.lineTo(cx - s * 0.6f, cy - s * 0.1f); path.lineTo(cx - s * 0.2f, cy + s * 0.4f)
+        }
+        com.example.opendash.dash.nav.ManeuverType.TURN_RIGHT,
+        com.example.opendash.dash.nav.ManeuverType.SHARP_RIGHT,
+        com.example.opendash.dash.nav.ManeuverType.SLIGHT_RIGHT -> {
+            path.moveTo(cx - s * 0.5f, cy + s); path.lineTo(cx - s * 0.5f, cy - s * 0.1f)
+            path.lineTo(cx + s * 0.6f, cy - s * 0.1f)
+            path.moveTo(cx + s * 0.2f, cy - s * 0.6f); path.lineTo(cx + s * 0.6f, cy - s * 0.1f); path.lineTo(cx + s * 0.2f, cy + s * 0.4f)
+        }
+        com.example.opendash.dash.nav.ManeuverType.UTURN -> {
+            path.moveTo(cx + s * 0.5f, cy + s); path.lineTo(cx + s * 0.5f, cy - s * 0.2f)
+            path.addArc(android.graphics.RectF(cx - s * 0.5f, cy - s * 0.8f, cx + s * 0.5f, cy + s * 0.0f), 0f, -180f)
+            path.moveTo(cx - s * 0.5f, cy + s * 0.2f); path.lineTo(cx - s * 0.5f, cy - s * 0.2f)
+            path.moveTo(cx - s * 0.8f, cy + s * 0.0f); path.lineTo(cx - s * 0.5f, cy + s * 0.3f); path.lineTo(cx - s * 0.2f, cy + s * 0.0f)
+        }
+        else -> {
+            path.moveTo(cx, cy + s); path.lineTo(cx, cy - s)
+            path.moveTo(cx - s * 0.5f, cy - s * 0.4f); path.lineTo(cx, cy - s); path.lineTo(cx + s * 0.5f, cy - s * 0.4f)
+        }
+    }
+    c.drawPath(path, p)
+}
+
 /** Google-style current-location blue dot: soft halo + white ring + blue fill. */
 private fun riderDotBitmap(): Bitmap {
     val s = 72
@@ -971,6 +1282,77 @@ private fun trailStartPinBitmap(): Bitmap {
     p.color = android.graphics.Color.rgb(52, 168, 83); c.drawCircle(s / 2f, s / 2f, s * 0.24f, p)
     p.color = android.graphics.Color.WHITE; c.drawCircle(s / 2f, s / 2f, s * 0.09f, p)
     return bmp
+}
+
+/**
+ * A point along [route] (preferring visible, well-spread fractions) that is at least 120 m
+ * from every [placed] bubble anchor — used to slide a colliding alternate's bubble to a free
+ * spot instead of stacking two labels. Null if nothing clear is found.
+ */
+private fun freeAnchorAlong(
+    route: List<GeoPoint>,
+    placed: List<GeoPoint>,
+    bounds: LatLngBounds?,
+): GeoPoint? {
+    val fractions = listOf(0.5, 0.62, 0.38, 0.72, 0.28, 0.82, 0.18)
+    val inView: (GeoPoint) -> Boolean =
+        if (bounds == null) ({ true }) else ({ bounds.contains(LatLng(it.lat, it.lng)) })
+    // Prefer candidates on screen; fall back to any clear candidate.
+    for (requireView in listOf(true, false)) {
+        for (f in fractions) {
+            val p = route[(f * (route.size - 1)).toInt().coerceIn(0, route.size - 1)]
+            if (requireView && !inView(p)) continue
+            if (placed.none { GeoPoint.distMeters(it, p) < 120.0 }) return p
+        }
+    }
+    return null
+}
+
+/**
+ * Where a route's duration bubble goes — Google-style: early (~a third) into the longest
+ * stretch that is unique to this route versus [other], and, when [bounds] is given, also
+ * inside the current viewport so the label follows panning/zooming. Falls back to any
+ * visible stretch, then the route midpoint; null when nothing qualifies (leave the bubble
+ * where it was).
+ */
+private fun bubbleAnchor(
+    route: List<GeoPoint>,
+    other: List<GeoPoint>?,
+    bounds: LatLngBounds? = null,
+): GeoPoint? {
+    if (route.size < 2) return null
+    val inView: (GeoPoint) -> Boolean =
+        if (bounds == null) ({ true }) else ({ bounds.contains(LatLng(it.lat, it.lng)) })
+    val distinct: (GeoPoint) -> Boolean =
+        if (other == null || other.size < 2) ({ true })
+        else {
+            // Sample the comparison route so the distance checks stay cheap on long routes.
+            val step = (other.size / 150).coerceAtLeast(1)
+            val sampled = ArrayList<GeoPoint>(other.size / step + 1)
+            for (i in other.indices step step) sampled.add(other[i])
+            ({ p -> sampled.all { GeoPoint.distMeters(p, it) > 40.0 } })
+        }
+
+    fun longestRun(ok: (GeoPoint) -> Boolean): Pair<Int, Int>? {
+        var bestStart = -1; var bestLen = 0; var curStart = -1
+        for (i in route.indices) {
+            if (ok(route[i])) {
+                if (curStart < 0) curStart = i
+                val len = i - curStart + 1
+                if (len > bestLen) { bestLen = len; bestStart = curStart }
+            } else curStart = -1
+        }
+        return if (bestStart >= 0) bestStart to bestLen else null
+    }
+
+    // Unique-to-this-route AND on screen: label lands just past the divergence.
+    longestRun { distinct(it) && inView(it) }?.let { (s, l) -> return route[s + (l * 3) / 10] }
+    // Whole distinct stretch is off screen: keep the label on whatever part is visible.
+    if (bounds != null) {
+        longestRun(inView)?.let { (s, l) -> return route[s + l / 2] }
+        return null // route fully off screen — don't move the bubble
+    }
+    return route[route.size / 2]
 }
 
 /**

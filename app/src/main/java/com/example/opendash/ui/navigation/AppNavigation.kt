@@ -17,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
@@ -52,12 +53,18 @@ sealed class Screen(val route: String) {
     object OfflineMaps : Screen("offline_maps")
 }
 
-private data class NavTab(val screen: Screen, val icon: ImageVector, val label: String)
+private data class NavTab(
+    val screen: Screen,
+    val icon: ImageVector?,
+    val label: String,
+    val activeIconRes: Int? = null,
+    val inactiveIconRes: Int? = null,
+)
 
 private val bottomTabs = listOf(
     NavTab(Screen.Home,   OpenDashIcons.Home,    "Home"),
     NavTab(Screen.Route,  OpenDashIcons.Navi,    "Navigate"),
-    NavTab(Screen.Trails, OpenDashIcons.Pin,     "Trails"),
+    NavTab(Screen.Trails, null,                  "Trails", activeIconRes = com.example.opendash.R.drawable.ic_custom_trail, inactiveIconRes = com.example.opendash.R.drawable.ic_custom_trail_inactive),
     NavTab(Screen.Expenses, OpenDashIcons.Chart, "Expenses"),
     NavTab(Screen.Garage, OpenDashIcons.Motor,  "Garage"),
     NavTab(Screen.Settings, OpenDashIcons.Gear, "More"),
@@ -208,19 +215,19 @@ fun AppNavigation(
                     if (showRecordingConflictDialog) {
                         androidx.compose.material3.AlertDialog(
                             onDismissRequest = { showRecordingConflictDialog = false },
-                            containerColor = com.example.opendash.ui.theme.Bg1,
+                            containerColor = MaterialTheme.colorScheme.surface,
                             icon = {
                                 androidx.compose.material3.Icon(
                                     com.example.opendash.ui.OpenDashIcons.Target,
                                     null,
-                                    tint = com.example.opendash.ui.theme.Warn,
+                                    tint = MaterialTheme.colorScheme.tertiary,
                                     modifier = androidx.compose.ui.Modifier.size(28.dp)
                                 )
                             },
                             title = {
                                 androidx.compose.material3.Text(
                                     "Navigation active",
-                                    color = com.example.opendash.ui.theme.TextHi,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     fontWeight = FontWeight.Bold,
                                     fontFamily = com.example.opendash.ui.theme.GeistFamily
                                 )
@@ -228,7 +235,7 @@ fun AppNavigation(
                             text = {
                                 androidx.compose.material3.Text(
                                     "Recording a trail will end your active navigation. Do you want to continue?",
-                                    color = com.example.opendash.ui.theme.TextLo,
+                                    color = MaterialTheme.colorScheme.outline,
                                     fontFamily = com.example.opendash.ui.theme.GeistFamily,
                                     fontSize = 14.sp
                                 )
@@ -241,12 +248,12 @@ fun AppNavigation(
                                     routeViewModel.prepareRecordingRoute()
                                     navController.navigate(Screen.Route.route) { launchSingleTop = true }
                                 }) {
-                                    androidx.compose.material3.Text("End & Record", color = com.example.opendash.ui.theme.Warn, fontFamily = com.example.opendash.ui.theme.GeistFamily, fontWeight = FontWeight.Bold)
+                                    androidx.compose.material3.Text("End & Record", color = MaterialTheme.colorScheme.tertiary, fontFamily = com.example.opendash.ui.theme.GeistFamily, fontWeight = FontWeight.Bold)
                                 }
                             },
                             dismissButton = {
                                 androidx.compose.material3.TextButton(onClick = { showRecordingConflictDialog = false }) {
-                                    androidx.compose.material3.Text("Cancel", color = com.example.opendash.ui.theme.TextLo, fontFamily = com.example.opendash.ui.theme.GeistFamily)
+                                    androidx.compose.material3.Text("Cancel", color = MaterialTheme.colorScheme.outline, fontFamily = com.example.opendash.ui.theme.GeistFamily)
                                 }
                             }
                         )
@@ -277,6 +284,7 @@ fun AppNavigation(
                 composable(Screen.Route.route) {
                     RouteScreen(
                         routeViewModel = routeViewModel,
+                        dashViewModel = dashViewModel,
                         onBack = { navigateHome() },
                         onNavigateToTrails = {
                             navController.navigate(Screen.Trails.route) {
@@ -400,8 +408,8 @@ private fun OpenDashBottomNav(
             .fillMaxWidth()
             .height(60.dp)
             .clip(CircleShape)
-            .background(Bg1.copy(alpha = 0.85f))
-            .border(1.dp, Line2.copy(alpha = 0.5f), CircleShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), CircleShape)
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -414,15 +422,24 @@ private fun OpenDashBottomNav(
                     .weight(1f)
                     .fillMaxHeight()
                     .clip(CircleShape)
-                    .background(if (active) GoldTint.copy(alpha = 0.9f) else Color.Transparent)
                     .clickable { onNavSelect(tab.screen) },
             ) {
-                Icon(
-                    tab.icon,
-                    contentDescription = tab.label,
-                    tint = if (active) GoldBright else TextLo,
-                    modifier = Modifier.size(24.dp),
-                )
+                val resId = if (active) tab.activeIconRes else (tab.inactiveIconRes ?: tab.activeIconRes)
+                if (resId != null) {
+                    Icon(
+                        painter = androidx.compose.ui.res.painterResource(resId),
+                        contentDescription = tab.label,
+                        tint = androidx.compose.ui.graphics.Color.Unspecified,
+                        modifier = Modifier.size(if (tab.screen == Screen.Trails) 32.dp else 24.dp),
+                    )
+                } else if (tab.icon != null) {
+                    Icon(
+                        tab.icon,
+                        contentDescription = tab.label,
+                        tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
             }
         }
     }

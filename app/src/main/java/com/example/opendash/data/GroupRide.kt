@@ -53,6 +53,7 @@ object GroupRide {
     private const val PUBLISH_INTERVAL_MS = 5_000L
     private const val EVENT_POS = "pos"
     private const val EVENT_BYE = "bye"
+    private const val EVENT_SIGNAL = "signal"
 
     /** Peer older than this renders greyed-out ("last seen…"). */
     const val STALE_MS = 20_000L
@@ -79,6 +80,9 @@ object GroupRide {
         /** Other riders only (self excluded), most recently updated first. */
         val peers: List<Peer> = emptyList(),
         val error: String? = null,
+        val isIntercomOnly: Boolean = false,
+        val isIntercomActive: Boolean = false,
+        val isLocationActive: Boolean = false,
     )
 
     val isConfigured: Boolean
@@ -86,7 +90,6 @@ object GroupRide {
 
     private val _state = MutableStateFlow(State())
     val state = _state.asStateFlow()
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var appContext: Context? = null
     private var deviceId: String = ""
@@ -110,6 +113,7 @@ object GroupRide {
     fun init(context: Context) {
         if (appContext != null) return
         appContext = context.applicationContext
+        IntercomEngine.init(context)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         deviceId = prefs.getString(KEY_DEVICE_ID, null) ?: UUID.randomUUID().toString().also {
             prefs.edit().putString(KEY_DEVICE_ID, it).apply()
@@ -124,13 +128,22 @@ object GroupRide {
         _state.value = _state.value.copy(riderName = trimmed)
     }
 
-    fun createRide(): String {
+    fun createRide(intercomOnly: Boolean = false): String {
+        val existingCode = _state.value.code
+        if (existingCode != null && _state.value.active) {
+            if (intercomOnly) {
+                enableIntercom()
+            } else {
+                enableLocationSharing()
+            }
+            return existingCode
+        }
         val code = (1..CODE_LENGTH).map { CODE_ALPHABET.random() }.joinToString("")
-        joinRide(code)
+        joinRide(code, intercomOnly)
         return code
     }
 
-    fun joinRide(rawCode: String) {
+    fun joinRide(rawCode: String, intercomOnly: Boolean = false) {
         val code = rawCode.trim().uppercase()
         if (code.length != CODE_LENGTH || code.any { it !in CODE_ALPHABET }) {
             _state.value = _state.value.copy(error = "Invalid ride code")
@@ -141,12 +154,25 @@ object GroupRide {
             return
         }
         leaveRide()   // at most one ride at a time
-        _state.value = _state.value.copy(connecting = true, code = code, error = null)
+        val startIntercom = intercomOnly
+        val startLocation = !intercomOnly
+        _state.value = _state.value.copy(
+            connecting = true,
+            code = code,
+            error = null,
+            isIntercomOnly = intercomOnly,
+            isIntercomActive = startIntercom,
+            isLocationActive = startLocation,
+        )
 
         rideJob = scope.launch {
             try {
                 val ch = client.channel("ride-$code")
                 channel = ch
+
+                if (startIntercom) {
+                    startIntercomEngine(ch)
+                }
 
                 // Collector must be registered before subscribe() or early messages drop.
                 launch {
@@ -154,6 +180,9 @@ object GroupRide {
                 }
                 launch {
                     ch.broadcastFlow<JsonObject>(event = EVENT_BYE).collect { onBye(it) }
+                }
+                launch {
+                    ch.broadcastFlow<JsonObject>(event = EVENT_SIGNAL).collect { onSignal(it) }
                 }
 
                 ch.subscribe(blockUntilSubscribed = true)
@@ -172,20 +201,76 @@ object GroupRide {
                 while (isActive) {
                     publishPosition(ch, t)
                     prunePeers()
-                    delay(PUBLISH_INTERVAL_MS)
+                    val speedKmh = (t.location.value?.speed ?: 0f) * 3.6f
+                    val dynamicDelay = if (speedKmh < 3f) 15_000L else PUBLISH_INTERVAL_MS
+                    delay(dynamicDelay)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 DebugLog.w(TAG) { "ride failed: ${e.message}" }
+                IntercomEngine.stopIntercom()
                 appContext?.let {
                     com.example.opendash.dash.DashKeepAliveService.stop(
                         it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
                     )
                 }
-                _state.value = _state.value.copy(
-                    active = false, connecting = false,
-                    error = e.message ?: "Connection failed",
-                )
+                _state.value = State(error = e.message ?: "Connection failed")
             }
+        }
+    }
+
+    private fun startIntercomEngine(ch: RealtimeChannel) {
+        IntercomEngine.startIntercom(deviceId) { targetPeerId, type, payload ->
+            scope.launch {
+                runCatching {
+                    ch.broadcast(
+                        EVENT_SIGNAL,
+                        buildJsonObject {
+                            put("from", deviceId)
+                            targetPeerId?.let { put("to", it) }
+                            put("type", type)
+                            put("payload", payload)
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun enableIntercom() {
+        if (!_state.value.active) return
+        val ch = channel ?: return
+        if (_state.value.isIntercomActive) return
+        _state.value = _state.value.copy(isIntercomActive = true)
+        startIntercomEngine(ch)
+        DebugLog.d(TAG) { "Enabled Intercom on active session ${_state.value.code}" }
+    }
+
+    fun enableLocationSharing() {
+        if (!_state.value.active) return
+        _state.value = _state.value.copy(isLocationActive = true, isIntercomOnly = false)
+        DebugLog.d(TAG) { "Enabled Location Sharing on active session ${_state.value.code}" }
+    }
+
+    fun stopIntercomOnly() {
+        if (!_state.value.active) return
+        IntercomEngine.stopIntercom()
+        if (!_state.value.isLocationActive) {
+            leaveRide()
+        } else {
+            _state.value = _state.value.copy(isIntercomActive = false)
+            DebugLog.d(TAG) { "Stopped Intercom only on session ${_state.value.code}" }
+        }
+    }
+
+    fun stopLocationOnly() {
+        if (!_state.value.active) return
+        if (!_state.value.isIntercomActive) {
+            leaveRide()
+        } else {
+            _state.value = _state.value.copy(isLocationActive = false, isIntercomOnly = true)
+            DebugLog.d(TAG) { "Stopped Location Sharing only on session ${_state.value.code}" }
         }
     }
 
@@ -193,6 +278,7 @@ object GroupRide {
         val ch = channel
         rideJob?.cancel(); rideJob = null
         tracker?.stop(); tracker = null
+        IntercomEngine.stopIntercom()
         appContext?.let {
             com.example.opendash.dash.DashKeepAliveService.stop(
                 it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
@@ -208,12 +294,15 @@ object GroupRide {
                 }
             }
         }
-        _state.value = _state.value.copy(active = false, connecting = false, code = null, peers = emptyList())
+        _state.value = State()
     }
 
     private suspend fun publishPosition(ch: RealtimeChannel, t: LocationTracker) {
-        val loc = t.location.value ?: return
         val name = _state.value.riderName.ifBlank { "Rider" }
+        val isLocationActive = _state.value.isLocationActive
+        val loc = if (isLocationActive) t.location.value else null
+        if (!isLocationActive || loc == null) return
+
         runCatching {
             ch.broadcast(
                 EVENT_POS,
@@ -245,13 +334,37 @@ object GroupRide {
                 updatedAtMs = System.currentTimeMillis(),
             )
             synchronized(peersById) { peersById[id] = peer }
+            IntercomEngine.initiateCallTo(id)
             pushPeers()
         }.onFailure { DebugLog.w(TAG) { "bad pos payload: ${it.message}" } }
+    }
+
+    private fun onSignal(msg: JsonObject) {
+        runCatching {
+            val from = msg["from"]?.jsonPrimitive?.content ?: return
+            if (from == deviceId) return
+            val to = msg["to"]?.jsonPrimitive?.content
+            if (to != null && to != deviceId) return
+            val type = msg["type"]?.jsonPrimitive?.content ?: return
+            val payload = msg["payload"]?.jsonPrimitive?.content ?: return
+
+            when (type) {
+                "offer" -> IntercomEngine.handleOffer(from, payload)
+                "answer" -> IntercomEngine.handleAnswer(from, payload)
+                "ice" -> {
+                    val parts = payload.split("|", limit = 3)
+                    if (parts.size == 3) {
+                        IntercomEngine.handleIceCandidate(from, parts[0], parts[1].toIntOrNull() ?: 0, parts[2])
+                    }
+                }
+            }
+        }.onFailure { DebugLog.w(TAG) { "bad signal payload: ${it.message}" } }
     }
 
     private fun onBye(msg: JsonObject) {
         val id = msg["id"]?.jsonPrimitive?.content ?: return
         synchronized(peersById) { peersById.remove(id) }
+        IntercomEngine.removePeer(id)
         pushPeers()
     }
 

@@ -74,6 +74,7 @@ private enum class MorePage(val title: String) {
     HELP("Help"),
     TERMS("Terms & Conditions"),
     LICENSE("License"),
+    TECH_STACK("Tech Stack"),
 }
 
 @Composable
@@ -115,7 +116,6 @@ fun SettingsScreen(
     ) { callAccessGranted = it }
     val themeMode by OpenDashThemeController.mode.collectAsState()
     val dynamicColor by OpenDashThemeController.dynamic.collectAsState()
-    val liveTraffic by NavSettings.liveTraffic.collectAsState()
     val customTrailsEnabled by NavSettings.customTrailsEnabled.collectAsState()
     remember(ctx) {
         CurrencySettings.init(ctx)
@@ -196,6 +196,22 @@ fun SettingsScreen(
                 modifier = Modifier.weight(1f),
             )
             if (page == MorePage.ROOT) {
+                // App theme: fresh installs follow the system (auto); one tap pins light or
+                // dark. The icon shows the mode a tap switches TO.
+                val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+                val effectiveDark = themeMode == ThemeMode.DARK ||
+                    (themeMode == ThemeMode.SYSTEM && systemDark)
+                OpenDashIconBtn(
+                    icon = if (effectiveDark) OpenDashIcons.Sun else OpenDashIcons.Moon,
+                    onClick = {
+                        OpenDashThemeController.setMode(
+                            ctx,
+                            if (effectiveDark) ThemeMode.LIGHT else ThemeMode.DARK,
+                        )
+                    },
+                    size = 42.dp,
+                )
+                Spacer(Modifier.width(8.dp))
                 OpenDashIconBtn(
                     icon = OpenDashIcons.Help,
                     onClick = { page = MorePage.HELP },
@@ -213,78 +229,41 @@ fun SettingsScreen(
         SectionLabel("Media & calls on dash")
         SettingsGroup(padding = 6.dp) {
             SettingRow(
-                OpenDashIcons.Bell,
-                "Now playing & caller cards",
-                if (mediaAccessGranted) "Enabled for active media and calls" else "Allow notification access",
+                icon = OpenDashIcons.Bell,
+                title = "Music and Calls",
                 control = {
                     OpenDashChip(
-                        if (mediaAccessGranted) "On" else "Enable",
-                        if (mediaAccessGranted) ChipTone.Gold else ChipTone.Off,
-                        dot = true,
+                        label = if (mediaAccessGranted) "Enabled" else "Enable",
+                        tone = if (mediaAccessGranted) ChipTone.Gold else ChipTone.Off,
+                        dot = false,
+                        onClick = if (mediaAccessGranted) null else {
+                            {
+                                runCatching {
+                                    ctx.startActivity(
+                                        com.example.opendash.media.MediaInfoProvider.accessSettingsIntent(),
+                                    )
+                                }
+                            }
+                        }
                     )
                 },
-                onClick = if (mediaAccessGranted) null else {
-                    {
-                        runCatching {
-                            ctx.startActivity(
-                                com.example.opendash.media.MediaInfoProvider.accessSettingsIntent(),
-                            )
-                        }
-                    }
-                },
+                onClick = null,
             )
             SettingsDivider(Modifier.padding(horizontal = 6.dp))
             SettingRow(
-                OpenDashIcons.Bt,
-                "Answer calls from joystick",
-                if (callAccessGranted) "UP answers; DOWN rejects or ends" else "Allow call controls",
+                icon = OpenDashIcons.Bt,
+                title = "Call Controls",
                 control = {
                     OpenDashChip(
-                        if (callAccessGranted) "On" else "Enable",
-                        if (callAccessGranted) ChipTone.Gold else ChipTone.Off,
-                        dot = true,
+                        label = if (callAccessGranted) "Enabled" else "Enable",
+                        tone = if (callAccessGranted) ChipTone.Gold else ChipTone.Off,
+                        dot = false,
+                        onClick = if (callAccessGranted) null else {
+                            { callPermissionLauncher.launch(android.Manifest.permission.ANSWER_PHONE_CALLS) }
+                        }
                     )
                 },
-                onClick = if (callAccessGranted) null else {
-                    { callPermissionLauncher.launch(android.Manifest.permission.ANSWER_PHONE_CALLS) }
-                },
-                last = true,
-            )
-        }
-
-        SectionLabel("Appearance")
-        SettingsGroup(padding = 6.dp) {
-            SettingRow(
-                icon = OpenDashIcons.Palette,
-                title = "Theme",
-                sub = themeMode.label,
-                control = {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ThemeMode.entries.forEach { m ->
-                            val active = themeMode == m
-                            Text(
-                                when (m) {
-                                    ThemeMode.SYSTEM -> "Auto"
-                                    ThemeMode.LIGHT -> "Light"
-                                    ThemeMode.DARK -> "Dark"
-                                },
-                                color = if (active) MaterialTheme.colorScheme.onPrimaryContainer
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp,
-                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
-                                fontFamily = GeistFamily,
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (active) MaterialTheme.colorScheme.primaryContainer
-                                        else MaterialTheme.colorScheme.surfaceContainerHigh
-                                    )
-                                    .clickable { OpenDashThemeController.setMode(ctx, m) }
-                                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                            )
-                        }
-                    }
-                },
+                onClick = null,
                 last = true,
             )
         }
@@ -293,28 +272,15 @@ fun SettingsScreen(
         SettingsGroup(padding = 6.dp) {
             SettingRow(
                 icon = OpenDashIcons.Download,
-                title = "Offline maps",
-                sub = "Download map areas to navigate with no signal",
+                title = "Offline Maps",
                 control = { Icon(OpenDashIcons.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) },
                 onClick = onOpenOfflineMaps,
             )
             SettingsDivider(Modifier.padding(horizontal = 6.dp))
             SettingRow(
-                icon = OpenDashIcons.Navi,
-                title = "Live traffic updates",
-                sub = "Refresh route traffic while riding (uses a little data/API). Off = traffic shown once when the route is planned.",
-                control = {
-                    androidx.compose.material3.Switch(
-                        checked = liveTraffic,
-                        onCheckedChange = { NavSettings.setLiveTraffic(ctx, it) },
-                    )
-                },
-            )
-            SettingsDivider(Modifier.padding(horizontal = 6.dp))
-            SettingRow(
-                icon = OpenDashIcons.Pin,
-                title = "Custom trails & tracking",
-                sub = "Enable recording manual trail paths and importing GPX coordinates",
+                icon = null,
+                iconRes = com.example.opendash.R.drawable.ic_custom_trail_inactive,
+                title = "Custom Trails",
                 control = {
                     androidx.compose.material3.Switch(
                         checked = customTrailsEnabled,
@@ -322,6 +288,7 @@ fun SettingsScreen(
                     )
                 },
                 last = true,
+                showBubbleBg = false,
             )
         }
 
@@ -338,7 +305,7 @@ fun SettingsScreen(
                         when {
                             pendingWallpaperPreview != null -> if (pendingWallpaperUri == null) "Edit selected media" else "Adjust dash crop"
                             dashUi.wallpaperSaving -> "Saving wallpaper…"
-                            dashUi.wallpaperPath == null -> "Default idle screen"
+                            dashUi.wallpaperPath == null -> "Default Idle Screen"
                             else -> "Gallery ${dashUi.wallpaperGalleryIndex + 1} of ${dashUi.wallpaperGalleryCount}"
                         },
                         color = MaterialTheme.colorScheme.onSurface,
@@ -357,7 +324,7 @@ fun SettingsScreen(
             dashUi.wallpaperError?.let { error ->
                 Text(
                     error,
-                    color = Alert,
+                    color = MaterialTheme.colorScheme.error,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 10.dp),
                 )
@@ -541,7 +508,7 @@ fun SettingsScreen(
                         SettingsIconBubble(OpenDashIcons.Clock, modifier = Modifier.size(42.dp))
                         Spacer(Modifier.width(14.dp))
                         Column {
-                            Text("Slideshow rotation", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
+                            Text("Slideshow Rotation", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
                             Text(
                                 when (slideshowInterval) {
                                     60 -> "Every minute"
@@ -726,6 +693,19 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
+                text = "License",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Medium,
+                fontFamily = GeistFamily,
+                modifier = Modifier.clickable { page = MorePage.LICENSE }
+            )
+            Text(
+                text = "•",
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                fontSize = 12.5.sp
+            )
+            Text(
                 text = "Terms & Conditions",
                 color = MaterialTheme.colorScheme.primary,
                 fontSize = 12.5.sp,
@@ -739,12 +719,12 @@ fun SettingsScreen(
                 fontSize = 12.5.sp
             )
             Text(
-                text = "License",
+                text = "Tech Stack",
                 color = MaterialTheme.colorScheme.primary,
                 fontSize = 12.5.sp,
                 fontWeight = FontWeight.Medium,
                 fontFamily = GeistFamily,
-                modifier = Modifier.clickable { page = MorePage.LICENSE }
+                modifier = Modifier.clickable { page = MorePage.TECH_STACK }
             )
         }
         Spacer(Modifier.height(8.dp))
@@ -773,15 +753,29 @@ private fun SettingsGroup(
 }
 
 @Composable
-private fun SettingsIconBubble(icon: ImageVector, modifier: Modifier = Modifier) {
+private fun SettingsIconBubble(
+    icon: ImageVector?,
+    modifier: Modifier = Modifier,
+    iconRes: Int? = null,
+    showBg: Boolean = true,
+) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
             .size(46.dp)
             .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.primaryContainer),
+            .background(if (showBg) MaterialTheme.colorScheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent),
     ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(21.dp))
+        if (iconRes != null) {
+            Icon(
+                painter = androidx.compose.ui.res.painterResource(iconRes),
+                contentDescription = null,
+                tint = androidx.compose.ui.graphics.Color.Unspecified,
+                modifier = Modifier.size(30.dp)
+            )
+        } else if (icon != null) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(21.dp))
+        }
     }
 }
 
@@ -839,6 +833,16 @@ private fun MoreInformationPage(page: MorePage, onBack: () -> Unit) {
             "Open-source components" to "OpenDash uses Kotlin, Jetpack Compose, MapLibre, OpenFreeMap, OSRM, AndroidX, and other libraries under their respective licenses.",
             "Source" to "github.com/subtlesayak/open-dash",
         )
+        MorePage.TECH_STACK -> listOf(
+            "Kotlin & Coroutines" to "Used as the primary language and for asynchronous programming to keep operations performant and off the main UI thread.",
+            "Jetpack Compose & Material 3" to "Used to build the modern, responsive, and declarative user interface adhering to Material Design 3 guidelines.",
+            "MapLibre SDK" to "Used for high-performance map rendering and displaying route previews and custom trails.",
+            "Mapbox API" to "Used for turn-by-turn routing (Mapbox Directions), route search, and real-time traffic updates.",
+            "Google Maps API" to "Used to support Places autocomplete and search, and to enable native two-wheeler vehicle routing.",
+            "Supabase Realtime" to "Used as the serverless backend to enable live location sharing in Group Ride.",
+            "Ktor & OkHttp" to "Used for clean, robust network requests and API communication.",
+            "AndroidX & Architecture Components" to "Used for navigation, local security/encryption, ViewModel structure, and lifecycle-aware state management."
+        )
         else -> emptyList()
     }
 
@@ -848,7 +852,7 @@ private fun MoreInformationPage(page: MorePage, onBack: () -> Unit) {
             .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
             .padding(18.dp)
-            .padding(bottom = 24.dp),
+            .padding(bottom = 100.dp),
     ) {
         ScreenHeader(title = page.title, onBack = onBack)
         sections.forEach { (title, body) ->
@@ -874,12 +878,14 @@ private fun SectionLabel(label: String) {
 
 @Composable
 private fun SettingRow(
-    icon: ImageVector,
+    icon: ImageVector?,
     title: String,
     sub: String? = null,
     control: @Composable () -> Unit,
     last: Boolean = false,
     onClick: (() -> Unit)? = null,
+    iconRes: Int? = null,
+    showBubbleBg: Boolean = true,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -888,7 +894,7 @@ private fun SettingRow(
             .let { if (onClick != null) it.clickable(onClick = onClick) else it }
             .padding(horizontal = 12.dp, vertical = 13.dp),
     ) {
-        SettingsIconBubble(icon, modifier = Modifier.size(42.dp))
+        SettingsIconBubble(icon = icon, iconRes = iconRes, modifier = Modifier.size(42.dp), showBg = showBubbleBg)
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(title, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
@@ -951,12 +957,12 @@ private fun DashCropPreview(
     modifier: Modifier = Modifier,
     showGuide: Boolean = true,
 ) {
-    val guideColor = Gold
+    val guideColor = MaterialTheme.colorScheme.primary
     Canvas(
         modifier = modifier
             .aspectRatio(526f / 300f)
             .clip(RoundedCornerShape(20.dp))
-            .background(Bg0),
+            .background(MaterialTheme.colorScheme.background),
     ) {
         if (fit == DashWallpaperFit.CROP) {
             val srcRatio = image.width.toFloat() / image.height.toFloat()
@@ -1096,7 +1102,8 @@ private fun ApiKeysGroup() {
             open = expanded == "mapbox",
             onToggle = { expanded = if (expanded == "mapbox") null else "mapbox" },
             guide = "RECOMMENDED — this is the easy one, and without it (or a Google key) " +
-                "turn-by-turn routing won't work. Takes ~2 minutes:\n" +
+                "turn-by-turn routing won't work. Also powers real-time traffic coloring " +
+                "on routes. Takes ~2 minutes:\n" +
                 "1. Create a free account at account.mapbox.com\n" +
                 "2. Tokens → copy your Default public token (starts with pk.)\n" +
                 "3. Paste it below",

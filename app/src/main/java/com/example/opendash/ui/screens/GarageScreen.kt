@@ -41,13 +41,23 @@ import java.util.Locale
 
 private val dfHistory = SimpleDateFormat("d MMM yyyy", Locale.getDefault())
 
-private fun iconFor(key: String): ImageVector = when (key) {
-    "chain"  -> OpenDashIcons.Chain
-    "drop"   -> OpenDashIcons.Drop
-    "gauge"  -> OpenDashIcons.Gauge
-    "thermo" -> OpenDashIcons.Thermo
-    "fuel"   -> OpenDashIcons.Fuel
-    else     -> OpenDashIcons.Wrench
+private fun iconFor(key: String, name: String = ""): ImageVector {
+    val lower = name.lowercase()
+    return when {
+        "chain" in lower -> OpenDashIcons.Chain
+        "oil" in lower -> OpenDashIcons.Drop
+        "brake" in lower -> OpenDashIcons.Disc
+        "tyre" in lower || "tire" in lower -> OpenDashIcons.Tyre
+        "coolant" in lower -> OpenDashIcons.Drop
+        "spark" in lower || "plug" in lower -> OpenDashIcons.Zap
+        "filter" in lower -> OpenDashIcons.Fuel
+        key == "chain" -> OpenDashIcons.Chain
+        key == "drop" -> OpenDashIcons.Drop
+        key == "gauge" -> OpenDashIcons.Gauge
+        key == "thermo" -> OpenDashIcons.Thermo
+        key == "fuel" -> OpenDashIcons.Fuel
+        else -> OpenDashIcons.Wrench
+    }
 }
 
 private fun dueText(row: MaintRow): String {
@@ -145,7 +155,7 @@ private fun GarageSectionHeader(title: String, subtitle: String) {
 
 @Composable
 private fun MaintenanceTab(ui: GarageUi, onSelect: (MaintRow) -> Unit, onLog: () -> Unit, onAdd: () -> Unit) {
-    val toneColor = mapOf("ok" to MaterialTheme.colorScheme.primary, "warn" to Warn, "alert" to MaterialTheme.colorScheme.error)
+    val toneColor = mapOf("ok" to MaterialTheme.colorScheme.primary, "warn" to MaterialTheme.colorScheme.tertiary, "alert" to MaterialTheme.colorScheme.error)
 
     Eyebrow("Service intervals", Modifier.padding(bottom = 8.dp, start = 4.dp))
 
@@ -164,7 +174,7 @@ private fun MaintenanceTab(ui: GarageUi, onSelect: (MaintRow) -> Unit, onLog: ()
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
-                        Icon(iconFor(row.item.iconKey), null, tint = color, modifier = Modifier.size(20.dp))
+                        Icon(iconFor(row.item.iconKey, row.item.name), null, tint = color, modifier = Modifier.size(20.dp))
                     }
                     Spacer(Modifier.width(13.dp))
                     Column(Modifier.weight(1f)) {
@@ -173,14 +183,6 @@ private fun MaintenanceTab(ui: GarageUi, onSelect: (MaintRow) -> Unit, onLog: ()
                     }
                     Column(horizontalAlignment = Alignment.End) {
                         Text(dueText(row), color = color, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
-                        row.remainingDays?.let { days ->
-                            Text(
-                                "or ${days.coerceAtLeast(0)} days",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(top = 2.dp),
-                            )
-                        }
                     }
                     Icon(OpenDashIcons.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp).padding(start = 4.dp))
                 }
@@ -223,7 +225,7 @@ private fun SparePartDetailsSheet(
     val parsedInterval = interval.toIntOrNull()
     val distanceUsed = (odometerKm - row.item.lastDoneOdoKm).coerceAtLeast(0)
     val status = when (row.tone) { "alert" -> "Overdue"; "warn" -> "Due soon"; else -> "Good" }
-    val statusColor = when (row.tone) { "alert" -> MaterialTheme.colorScheme.error; "warn" -> Warn; else -> MaterialTheme.colorScheme.primary }
+    val statusColor = when (row.tone) { "alert" -> MaterialTheme.colorScheme.error; "warn" -> MaterialTheme.colorScheme.tertiary; else -> MaterialTheme.colorScheme.primary }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surfaceContainer) {
         Column(
@@ -372,7 +374,7 @@ private fun LogServiceDialog(rows: List<MaintRow>, odo: Int, onMark: (Maintenanc
                 Text("Marks the item done at ${"%,d".format(odo)} km.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
                 rows.forEach { row ->
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-                        Icon(iconFor(row.item.iconKey), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                        Icon(iconFor(row.item.iconKey, row.item.name), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(10.dp))
                         Text(row.item.name, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.5.sp, modifier = Modifier.weight(1f))
                         TextButton(onClick = { onMark(row.item) }) { Text("Done", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp) }

@@ -7,13 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Audiotrack
-import androidx.compose.material.icons.outlined.Call
-import androidx.compose.material.icons.outlined.CallEnd
-import androidx.compose.material.icons.outlined.SkipNext
-import androidx.compose.material.icons.outlined.SkipPrevious
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -31,8 +25,6 @@ import androidx.compose.ui.unit.sp
 import com.example.opendash.media.IncomingCall
 import com.example.opendash.media.NowPlaying
 import com.example.opendash.ui.theme.GeistFamily
-import com.example.opendash.ui.theme.TextHi
-import com.example.opendash.ui.theme.TextLo
 
 @Composable
 fun NowPlayingCard(
@@ -68,7 +60,7 @@ fun NowPlayingCard(
                     )
                 } else {
                     Icon(
-                        imageVector = Icons.Outlined.Audiotrack,
+                        imageVector = Icons.Rounded.Audiotrack,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(24.dp)
@@ -82,7 +74,7 @@ fun NowPlayingCard(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = track.title.ifBlank { "Unknown Title" },
-                    color = TextHi,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = GeistFamily,
@@ -92,7 +84,7 @@ fun NowPlayingCard(
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = track.artist.ifBlank { "Unknown Artist" },
-                    color = TextLo,
+                    color = MaterialTheme.colorScheme.outline,
                     fontSize = 13.sp,
                     fontFamily = GeistFamily,
                     maxLines = 1,
@@ -108,17 +100,17 @@ fun NowPlayingCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OpenDashIconBtn(
-                    icon = Icons.Outlined.SkipPrevious,
+                    icon = Icons.Rounded.SkipPrevious,
                     onClick = onPrev,
                     size = 38.dp
                 )
                 OpenDashIconBtn(
-                    icon = if (track.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                    icon = if (track.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                     onClick = onPlayPause,
                     size = 38.dp
                 )
                 OpenDashIconBtn(
-                    icon = Icons.Outlined.SkipNext,
+                    icon = Icons.Rounded.SkipNext,
                     onClick = onNext,
                     size = 38.dp
                 )
@@ -155,9 +147,9 @@ fun CallerCard(
                     )
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.Call,
+                    imageVector = Icons.Rounded.Call,
                     contentDescription = null,
-                    tint = if (call.incoming) MaterialTheme.colorScheme.primary else TextHi,
+                    tint = if (call.incoming) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -168,7 +160,7 @@ fun CallerCard(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = if (call.incoming) "INCOMING CALL" else "ACTIVE CALL",
-                    color = if (call.incoming) MaterialTheme.colorScheme.primary else TextLo,
+                    color = if (call.incoming) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = GeistFamily,
@@ -177,7 +169,7 @@ fun CallerCard(
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = call.caller,
-                    color = TextHi,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = GeistFamily,
@@ -195,14 +187,14 @@ fun CallerCard(
             ) {
                 if (call.incoming) {
                     OpenDashIconBtn(
-                        icon = Icons.Outlined.Call,
+                        icon = Icons.Rounded.Call,
                         onClick = onAnswer,
                         size = 38.dp,
                         tint = Color(0xFF22C55E) // Green for accept
                     )
                 }
                 OpenDashIconBtn(
-                    icon = Icons.Outlined.CallEnd,
+                    icon = Icons.Rounded.CallEnd,
                     onClick = onDecline,
                     size = 38.dp,
                     tint = Color(0xFFEF4444) // Red for decline/hangup

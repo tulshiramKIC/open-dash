@@ -56,7 +56,7 @@ fun HomeScreen(
     val savedAll by routeViewModel.saved.collectAsState()
     // Exclude custom trail entries (those with a recorded route JSON on disk)
     val saved = remember(savedAll) {
-        savedAll.filter { loc -> !java.io.File(context.filesDir, "route_${loc.sid}.json").exists() }
+        savedAll.filter { loc -> !java.io.File(context.filesDir, "trail_${loc.sid}.json").exists() }
     }
     val rides by ridesViewModel.rides.collectAsState()
     val garage by garageViewModel.ui.collectAsState()
@@ -65,7 +65,7 @@ fun HomeScreen(
 
     val (statusText, statusColor) = when (conn) {
         ConnectionState.Connected -> "Streaming to dash" to Ok
-        ConnectionState.Searching -> "Looking for dash…" to Warn
+        ConnectionState.Searching -> "Looking for dash…" to MaterialTheme.colorScheme.tertiary
         ConnectionState.Offline   -> "Dash not connected" to MaterialTheme.colorScheme.outline
     }
 
@@ -258,14 +258,14 @@ fun HomeScreen(
                         Icon(
                             OpenDashIcons.ChevronRight,
                             contentDescription = "Resume navigation",
-                            tint = TextLo,
+                            tint = MaterialTheme.colorScheme.outline,
                             modifier = Modifier.size(16.dp)
                         )
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         activeDest,
-                        color = TextHi,
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = GeistFamily,
@@ -299,9 +299,9 @@ fun HomeScreen(
                                     .padding(horizontal = 10.dp, vertical = 6.dp)
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(OpenDashIcons.Road, null, tint = Gold, modifier = Modifier.size(12.dp))
+                                    Icon(OpenDashIcons.Route, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(12.dp))
                                     Spacer(Modifier.width(6.dp))
-                                    Text(dist, color = TextHi, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                                    Text(dist, color = MaterialTheme.colorScheme.onSurface, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
                                 }
                             }
                         }
@@ -329,9 +329,9 @@ fun HomeScreen(
                                     .padding(horizontal = 10.dp, vertical = 6.dp)
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(OpenDashIcons.Flag, null, tint = TextMid, modifier = Modifier.size(12.dp))
+                                    Icon(OpenDashIcons.Flag, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
                                     Spacer(Modifier.width(6.dp))
-                                    Text(eta, color = TextHi, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
+                                    Text(eta, color = MaterialTheme.colorScheme.onSurface, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, fontFamily = GeistMonoFamily)
                                 }
                             }
                         }
@@ -340,18 +340,10 @@ fun HomeScreen(
             }
         }
 
-        Spacer(Modifier.height(24.dp))
-
-        // ── Saved destinations ──
-        HomeSection("Saved destinations")
-        if (saved.isEmpty()) {
-            EmptyHint(
-                icon = OpenDashIcons.LocationPin,
-                title = "Nothing saved yet",
-                sub = "Share a place from Google Maps, or search in Navigate",
-                onClick = { onNavigate("route") },
-            )
-        } else {
+        if (saved.isNotEmpty()) {
+            Spacer(Modifier.height(24.dp))
+            // ── Saved destinations ──
+            HomeSection("Saved destinations")
             OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 6.dp) {
                 saved.forEachIndexed { i, loc ->
                     if (i > 0) OpenDashDivider(Modifier.padding(horizontal = 4.dp))
@@ -378,7 +370,7 @@ fun HomeScreen(
                             Icon(
                                 OpenDashIcons.Trash,
                                 contentDescription = "Delete ${loc.name}",
-                                tint = Alert,
+                                tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(18.dp),
                             )
                         }
@@ -388,21 +380,14 @@ fun HomeScreen(
             }
         }
 
-        Spacer(Modifier.height(24.dp))
-
-        // ── Recent rides ──
-        HomeSection(
-            "Recent rides",
-            action = if (rides.isNotEmpty()) "View all" else null,
-            onAction = { onNavigate("rides") },
-        )
-        if (rides.isEmpty()) {
-            EmptyHint(
-                icon = OpenDashIcons.History,
-                title = "No rides yet",
-                sub = "Rides are recorded automatically while connected",
+        if (rides.isNotEmpty()) {
+            Spacer(Modifier.height(24.dp))
+            // ── Recent rides ──
+            HomeSection(
+                "Recent rides",
+                action = "View all",
+                onAction = { onNavigate("rides") },
             )
-        } else {
             OpenDashCard(modifier = Modifier.fillMaxWidth(), padding = 6.dp) {
                 rides.take(3).forEachIndexed { i, ride ->
                     if (i > 0) OpenDashDivider(Modifier.padding(horizontal = 4.dp))

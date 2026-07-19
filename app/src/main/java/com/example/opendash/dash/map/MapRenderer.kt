@@ -45,18 +45,39 @@ class MapRenderer(private val tiles: TileProvider) {
         val gpsLost: Boolean = false,
         val showMediaOverlay: Boolean = false,
         val gpsTopOffset: Float = 14f,
+        /** Night map: dark background + inverted/dimmed tiles (the raster-tile night trick). */
+        val night: Boolean = false,
     )
 
-    private val bgColor   = Color.rgb(229, 227, 223) // Google Maps land colour, behind missing tiles
+    private val bgColor      = Color.rgb(229, 227, 223) // Google Maps land colour, behind missing tiles
+    private val bgColorNight = Color.rgb(18, 20, 24)    // land colour behind missing tiles at night
     private val routeBlue = Color.rgb(66, 133, 244)  // Google Maps directions blue (#4285F4)
     private val googleRed = Color.rgb(234, 67, 53)   // Google destination pin red (#EA4335)
 
-    private val tilePaint  = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+    private val dayTileFilter = ColorMatrixColorFilter(ColorMatrix().apply {
         // Google tiles already carry the right colours/contrast — only a gentle
         // saturation nudge to help against the dash TFT's daylight wash-out. No
         // brightness/contrast tricks (those flattened or clipped the map before).
-        colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.2f) })
-    }
+        setSaturation(1.2f)
+    })
+    private val nightTileFilter = ColorMatrixColorFilter(ColorMatrix().apply {
+        // Invert (white roads/land → dark), then desaturate and dim so the inverted
+        // hues read as a neutral dark map instead of a photo negative.
+        set(floatArrayOf(
+            -1f, 0f, 0f, 0f, 255f,
+            0f, -1f, 0f, 0f, 255f,
+            0f, 0f, -1f, 0f, 255f,
+            0f, 0f, 0f, 1f, 0f,
+        ))
+        postConcat(ColorMatrix().apply { setSaturation(0.35f) })
+        postConcat(ColorMatrix(floatArrayOf(
+            0.85f, 0f, 0f, 0f, 0f,
+            0f, 0.85f, 0f, 0f, 0f,
+            0f, 0f, 0.85f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f,
+        )))
+    })
+    private val tilePaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = dayTileFilter }
     private val routeCasing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; style = Paint.Style.STROKE
         strokeWidth = 11f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
@@ -105,7 +126,8 @@ class MapRenderer(private val tiles: TileProvider) {
     fun draw(canvas: Canvas, f: Frame) {
         val w = canvas.width
         val h = canvas.height
-        canvas.drawColor(bgColor)
+        canvas.drawColor(if (f.night) bgColorNight else bgColor)
+        tilePaint.colorFilter = if (f.night) nightTileFilter else dayTileFilter
 
         val rotate = f.headingUp
         val tilt = rotate && f.tilt3d
@@ -280,9 +302,10 @@ class MapRenderer(private val tiles: TileProvider) {
         // No other on-map text overlays — the dash's own widgets show name/turn, and the
         // round bezel clips anything near the top edge.
 
-        // ── Standby when nothing to show (dark text on the light map bg) ──
+        // ── Standby when nothing to show (contrast against the day/night map bg) ──
         if (f.riderLat == null && f.destLat == null) {
             val msg = "OpenDash · waiting for GPS"
+            standbyPaint.color = if (f.night) Color.rgb(189, 193, 198) else Color.rgb(60, 64, 67)
             standbyPaint.getTextBounds(msg, 0, msg.length, textBounds)
             canvas.drawText(msg, (w - textBounds.width()) / 2f, h / 2f, standbyPaint)
         }

@@ -29,6 +29,7 @@ class MediaInfoProvider(private val context: Context) {
     private val sessionsCallback = MediaSessionManager.OnActiveSessionsChangedListener(::bind)
 
     fun start() {
+        currentInstance = this
         if (!isAccessGranted(context)) {
             DebugLog.i(TAG) { "Notification access unavailable; media forwarding is disabled" }
             return
@@ -40,6 +41,9 @@ class MediaInfoProvider(private val context: Context) {
     }
 
     fun stop() {
+        if (currentInstance == this) {
+            currentInstance = null
+        }
         runCatching { sessionManager?.removeOnActiveSessionsChangedListener(sessionsCallback) }
         controller?.unregisterCallback(controllerCallback)
         controller = null
@@ -121,6 +125,9 @@ class MediaInfoProvider(private val context: Context) {
 
     companion object {
         private const val TAG = "MediaInfoProvider"
+
+        @Volatile var currentInstance: MediaInfoProvider? = null
+            private set
 
         fun isAccessGranted(context: Context): Boolean {
             val enabled = Settings.Secure.getString(

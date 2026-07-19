@@ -121,7 +121,7 @@ class LocationTracker(context: Context) {
             if (provider == "fused" && !hasFineLocationPermission()) continue
             runCatching {
                 if (lm.isProviderEnabled(provider)) {
-                    lm.requestLocationUpdates(provider, 500L, 0f, listener, Looper.getMainLooper())
+                    lm.requestLocationUpdates(provider, 1000L, 1.0f, listener, Looper.getMainLooper())
                     registered = true
                 }
             }.onFailure { error ->

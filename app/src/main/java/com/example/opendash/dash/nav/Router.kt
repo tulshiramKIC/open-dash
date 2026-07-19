@@ -84,6 +84,9 @@ object Router {
             }
             put("travelMode", mode.googleMode)
             put("routingPreference", "TRAFFIC_AWARE_OPTIMAL")
+            // Without this, speedReadingIntervals never appear in the response — the
+            // field mask alone doesn't turn traffic-on-polyline computation on.
+            put("extraComputations", JSONArray().put("TRAFFIC_ON_POLYLINE"))
             put("computeAlternativeRoutes", if (stops.isNotEmpty()) false else alternatives)
             put("polylineEncoding", "ENCODED_POLYLINE")
             put("languageCode", "en-IN")
@@ -212,8 +215,29 @@ object Router {
         coords.addAll(stops)
         coords.add(to)
         val coordString = coords.joinToString(";") { "${it.lng},${it.lat}" }
-        val url = "$MAPBOX_BASE/driving/$coordString" +
+        // driving-traffic: only this profile carries live congestion annotations…
+        val routes = mapboxRequest("driving-traffic", coordString, alternatives, mode, token, congestion = true)
+            .toMutableList()
+        // …but it is stingy with alternatives. When it returns just one route, ask the
+        // plain driving profile for alternates and append the genuinely different ones
+        // (they carry no congestion — drawn plain blue, which is fine for an alternate).
+        if (alternatives && routes.size <= 1) {
+            val extra = mapboxRequest("driving", coordString, true, mode, token, congestion = false)
+            for (r in extra) {
+                if (routes.none { sameRoad(it, r) }) routes.add(r)
+            }
+            if (routes.isEmpty()) return emptyList()
+        }
+        return routes
+    }
+
+    private fun mapboxRequest(
+        profile: String, coordString: String, alternatives: Boolean, mode: TravelMode,
+        token: String, congestion: Boolean,
+    ): List<Route> {
+        val url = "$MAPBOX_BASE/$profile/$coordString" +
             "?alternatives=$alternatives&overview=full&geometries=polyline&steps=true" +
+            (if (congestion) "&annotations=congestion" else "") +
             (mode.mapboxExclude?.let { "&exclude=$it" } ?: "") +
             "&access_token=${URLEncoder.encode(token, "UTF-8")}"
         return try {
@@ -226,9 +250,24 @@ object Router {
             conn.disconnect()
             parseMapboxRoutes(body)
         } catch (e: Exception) {
-            DebugLog.w(TAG) { "mapboxRoutes() failed: ${e.message}" }
+            DebugLog.w(TAG) { "mapboxRequest($profile) failed: ${e.message}" }
             emptyList()
         }
+    }
+
+    /** True when [b] rides essentially the same roads as [a] (≥80% of sampled points within 40 m). */
+    private fun sameRoad(a: Route, b: Route): Boolean {
+        val sampleStep = (b.geometry.size / 30).coerceAtLeast(1)
+        var near = 0
+        var total = 0
+        val refStep = (a.geometry.size / 200).coerceAtLeast(1)
+        val ref = a.geometry.filterIndexed { i, _ -> i % refStep == 0 }
+        for (i in b.geometry.indices step sampleStep) {
+            total++
+            val p = b.geometry[i]
+            if (ref.any { GeoPoint.distMeters(p, it) < 40.0 }) near++
+        }
+        return total > 0 && near.toDouble() / total >= 0.8
     }
 
     private fun parseMapboxRoutes(json: String): List<Route> {
@@ -274,13 +313,44 @@ object Router {
             }
         }
 
+        // Congestion annotation: one level string per geometry segment, per leg.
+        val congestion = ArrayList<Int>()
+        if (legs != null) {
+            for (li in 0 until legs.length()) {
+                val arr = legs.getJSONObject(li).optJSONObject("annotation")
+                    ?.optJSONArray("congestion") ?: continue
+                for (ci in 0 until arr.length()) {
+                    congestion.add(
+                        when (arr.optString(ci)) {
+                            "moderate"        -> 1
+                            "heavy", "severe" -> 2
+                            else              -> 0
+                        }
+                    )
+                }
+            }
+        }
+
         return Route(
             geometry = geometry,
             maneuvers = maneuvers,
             totalMeters = r0.optDouble("distance", cum.last()),
             totalSeconds = r0.optDouble("duration", 0.0),
             cumulative = cum,
+            congestion = fitCongestion(congestion, geometry.size),
         )
+    }
+
+    /**
+     * Map a congestion array onto exactly [pointCount]-1 segments. The annotation usually
+     * matches the full-resolution geometry already; when leg/overview simplification makes
+     * the counts drift, resample by index so the coloring still lines up.
+     */
+    private fun fitCongestion(congestion: List<Int>, pointCount: Int): List<Int> {
+        val segments = pointCount - 1
+        if (congestion.isEmpty() || segments <= 0) return emptyList()
+        if (congestion.size == segments) return congestion
+        return List(segments) { i -> congestion[(i.toLong() * congestion.size / segments).toInt().coerceIn(0, congestion.size - 1)] }
     }
 
     // ── Shared helpers ─────────────────────────────────────────────────────

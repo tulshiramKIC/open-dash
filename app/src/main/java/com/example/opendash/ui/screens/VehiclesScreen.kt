@@ -50,7 +50,6 @@ import com.example.opendash.ui.components.ChipTone
 import com.example.opendash.ui.components.ScreenHeader
 import com.example.opendash.data.VehicleProfile
 import com.example.opendash.data.VehicleStore
-import com.example.opendash.ui.theme.Alert
 import com.example.opendash.ui.theme.GeistFamily
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -223,7 +222,7 @@ private fun VehicleMeta(label: String, value: String, alert: Boolean = false) {
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.width(90.dp))
         Text(":", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         Spacer(Modifier.width(8.dp))
-        Text(value, color = if (alert) Alert else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Text(value, color = if (alert) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
     }
 }
 
@@ -472,7 +471,7 @@ private fun EditVehicleDialog(
                         VehicleStore.delete(context, vehicle.id)
                         onDismiss()
                     }) {
-                        Text("Delete", color = Alert)
+                        Text("Delete", color = MaterialTheme.colorScheme.error)
                     }
                     Spacer(Modifier.width(8.dp))
                 }

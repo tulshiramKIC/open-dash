@@ -9,8 +9,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ChevronLeft
-import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.rounded.ChevronLeft
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
@@ -189,7 +189,6 @@ fun OpenDashBtn(
 }
 
 // ---- Icon button (square rounded) ----
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun OpenDashIconBtn(
     icon: ImageVector,
@@ -198,18 +197,20 @@ fun OpenDashIconBtn(
     size: Dp = 44.dp,
     active: Boolean = false,
     tint: Color? = null,
+    shape: androidx.compose.ui.graphics.Shape = CircleShape,
 ) {
-    IconButton(
+    val containerColor = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+    val contentColor = tint ?: if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(
         onClick = onClick,
-        shapes = IconButtonDefaults.shapes(),
-        modifier = modifier
-            .size(size),
-        colors = IconButtonDefaults.iconButtonColors(
-            containerColor = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-            contentColor = tint ?: if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-        ),
+        shape = shape,
+        color = containerColor,
+        contentColor = contentColor,
+        modifier = modifier.size(size)
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+        Box(contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+        }
     }
 }
 
@@ -473,7 +474,7 @@ fun OpenDashRow(
         if (trailingIcon || (onClick != null && right == null)) {
             Spacer(Modifier.width(8.dp))
             Icon(
-                Icons.Outlined.ChevronRight,
+                Icons.Rounded.ChevronRight,
                 contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp),
             )
         }
@@ -499,7 +500,7 @@ fun ScreenHeader(
     ) {
         if (onBack != null) {
             OpenDashIconBtn(
-                icon = Icons.Outlined.ChevronLeft,
+                icon = Icons.Rounded.ChevronLeft,
                 onClick = onBack,
                 modifier = Modifier.padding(end = 12.dp),
             )
@@ -521,8 +522,8 @@ fun ScreenHeader(
                     if (eyebrow != null) Eyebrow(eyebrow, Modifier.padding(bottom = 3.dp))
                     if (title != null) {
                         Text(
-                            title, color = MaterialTheme.colorScheme.onSurface, fontSize = 30.sp,
-                            fontWeight = FontWeight.Bold, fontFamily = GeistFamily,
+                            title, color = MaterialTheme.colorScheme.onSurface, fontSize = 26.sp,
+                            fontWeight = FontWeight.Medium, fontFamily = GeistFamily,
                             letterSpacing = 0.sp,
                         )
                     }

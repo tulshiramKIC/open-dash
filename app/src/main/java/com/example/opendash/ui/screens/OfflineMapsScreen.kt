@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -204,8 +205,8 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
     namingBounds?.let { bounds ->
         NameAreaDialog(
             defaultName = "Area ${areas.size + 1}",
-            onConfirm = { name ->
-                OfflineMaps.startDownload(ctx, name, bounds)
+            onConfirm = { name, satellite ->
+                OfflineMaps.startDownload(ctx, name, bounds, includeSatellite = satellite)
                 namingBounds = null
             },
             onDismiss = { namingBounds = null },
@@ -277,26 +278,21 @@ private fun AreaRow(area: OfflineMaps.Area) {
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
         ) {
-            Box(
-                contentAlignment = Alignment.Center,
+            MapSnapshotImage(
+                bounds = area.bounds,
                 modifier = Modifier
                     .size(42.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-            ) {
-                Icon(OpenDashIcons.Navi, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-            }
+            )
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(area.name, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistFamily)
                 val sub = if (area.complete) {
-                    val size = OfflineMaps.formatSize(area.sizeBytes)
-                    val poi = if (area.placesCount > 0) "${area.placesCount} places indexed" else "Search index failed"
-                    "$size · $poi"
+                    OfflineMaps.formatSize(area.sizeBytes)
                 } else "Incomplete · ${OfflineMaps.formatSize(area.sizeBytes)}"
                 Text(
                     sub,
-                    color = if (area.complete && area.placesCount == 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp, fontFamily = GeistMonoFamily,
                     modifier = Modifier.padding(top = 2.dp),
                 )
@@ -307,32 +303,113 @@ private fun AreaRow(area: OfflineMaps.Area) {
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete \"${area.name}\"?") },
-            text = { Text("This removes the downloaded tiles for this area.") },
-            confirmButton = {
-                TextButton(onClick = { OfflineMaps.delete(area); confirmDelete = false }) { Text("Delete") }
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = {
+                Text(
+                    "Delete \"${area.name}\"?",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = GeistFamily
+                )
             },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+            text = {
+                Text(
+                    "This removes the downloaded tiles for this area.",
+                    color = MaterialTheme.colorScheme.outline,
+                    fontFamily = GeistFamily,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { OfflineMaps.delete(area); confirmDelete = false }) {
+                    Text(
+                        "Delete",
+                        color = MaterialTheme.colorScheme.error,
+                        fontFamily = GeistFamily,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) {
+                    Text(
+                        "Cancel",
+                        color = MaterialTheme.colorScheme.outline,
+                        fontFamily = GeistFamily
+                    )
+                }
+            },
         )
     }
 }
 
 @Composable
-private fun NameAreaDialog(defaultName: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+private fun NameAreaDialog(defaultName: String, onConfirm: (String, Boolean) -> Unit, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf(defaultName) }
+    var satellite by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Name this area") },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                singleLine = true,
-                label = { Text("Area name") },
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = {
+            Text(
+                "Name this area",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Bold,
+                fontFamily = GeistFamily
             )
         },
-        confirmButton = { TextButton(onClick = { onConfirm(name) }) { Text("Download") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    label = { Text("Area name", fontFamily = GeistFamily) },
+                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = GeistFamily),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                        .clickable { satellite = !satellite },
+                ) {
+                    androidx.compose.material3.Checkbox(
+                        checked = satellite,
+                        onCheckedChange = { satellite = it },
+                    )
+                    Column {
+                        Text("Include satellite imagery", fontFamily = GeistFamily, fontSize = 14.sp)
+                        Text(
+                            "Map + satellite in one download · larger",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontFamily = GeistFamily,
+                            fontSize = 11.5.sp,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name, satellite) }) {
+                Text(
+                    "Download",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontFamily = GeistFamily,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    "Cancel",
+                    color = MaterialTheme.colorScheme.outline,
+                    fontFamily = GeistFamily
+                )
+            }
+        },
     )
 }
 
@@ -349,4 +426,57 @@ private fun selectionBounds(mapView: MapView, map: MapLibreMap): LatLngBounds {
     val a = proj.fromScreenLocation(PointF(inset, inset))
     val b = proj.fromScreenLocation(PointF(w - inset, h - inset))
     return LatLngBounds.Builder().include(a).include(b).build()
+}
+
+@Composable
+private fun MapSnapshotImage(
+    bounds: LatLngBounds?,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var bitmap by remember(bounds) { mutableStateOf<android.graphics.Bitmap?>(null) }
+
+    DisposableEffect(bounds) {
+        if (bounds == null) return@DisposableEffect onDispose {}
+
+        val density = context.resources.displayMetrics.density
+        val size = (42 * density).toInt()
+
+        val options = org.maplibre.android.snapshotter.MapSnapshotter.Options(size, size)
+            .withStyle(OfflineMaps.MAP_STYLE_URL)
+            .withRegion(bounds)
+
+        val snapshotter = org.maplibre.android.snapshotter.MapSnapshotter(context, options)
+
+        snapshotter.start(object : org.maplibre.android.snapshotter.MapSnapshotter.SnapshotReadyCallback {
+            override fun onSnapshotReady(snapshot: org.maplibre.android.snapshotter.MapSnapshot) {
+                bitmap = snapshot.bitmap
+            }
+        })
+
+        onDispose {
+            snapshotter.cancel()
+        }
+    }
+
+    if (bitmap != null) {
+        androidx.compose.foundation.Image(
+            bitmap = bitmap!!.asImageBitmap(),
+            contentDescription = null,
+            modifier = modifier,
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop
+        )
+    } else {
+        Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                OpenDashIcons.Map,
+                null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
 }

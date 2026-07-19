@@ -1,72 +1,8 @@
 package com.example.opendash.ui
 
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Bluetooth
-import androidx.compose.material.icons.outlined.Wifi
-import androidx.compose.material.icons.outlined.ArrowUpward
-import androidx.compose.material.icons.outlined.ArrowDownward
-import androidx.compose.material.icons.outlined.Bolt
-import androidx.compose.material.icons.outlined.Build
-import androidx.compose.material.icons.outlined.Dashboard
-import androidx.compose.material.icons.outlined.Link
-import androidx.compose.material.icons.outlined.Place
-import androidx.compose.material.icons.outlined.Terrain
-import androidx.compose.material.icons.outlined.TurnLeft
-import androidx.compose.material.icons.outlined.TurnRight
-import androidx.compose.material.icons.outlined.TurnSlightLeft
-import androidx.compose.material.icons.outlined.TurnSlightRight
-import androidx.compose.material.icons.outlined.UTurnLeft
-
-import androidx.compose.material.icons.outlined.CalendarToday
-import androidx.compose.material.icons.outlined.DirectionsCar
-import androidx.compose.material.icons.outlined.BookmarkBorder
-import androidx.compose.material.icons.outlined.BarChart
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.ChevronLeft
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Reorder
-import androidx.compose.material.icons.outlined.RadioButtonUnchecked
-import androidx.compose.material.icons.outlined.DarkMode
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Directions
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Email
-import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.Flag
-import androidx.compose.material.icons.outlined.GpsFixed
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Layers
-import androidx.compose.material.icons.outlined.LocalGasStation
-import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.Mic
-import androidx.compose.material.icons.outlined.MyLocation
-import androidx.compose.material.icons.outlined.Navigation
-import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.Groups
-import androidx.compose.material.icons.outlined.PowerSettingsNew
-import androidx.compose.material.icons.outlined.Remove
-import androidx.compose.material.icons.outlined.Route
-import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.Straighten
-import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.SwapVert
-import androidx.compose.material.icons.outlined.Thermostat
-import androidx.compose.material.icons.outlined.TrendingUp
-import androidx.compose.material.icons.outlined.TwoWheeler
-import androidx.compose.material.icons.outlined.VolumeOff
-import androidx.compose.material.icons.outlined.VolumeUp
-import androidx.compose.material.icons.outlined.WaterDrop
-import androidx.compose.material.icons.outlined.HelpOutline
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -77,74 +13,81 @@ import androidx.compose.ui.unit.dp
 
 object OpenDashIcons {
     // ---- Material icon aliases ----
-    val Home          = Icons.Outlined.Home
-    val Route         = Icons.Outlined.Route
+    val Home          = Icons.Rounded.Home
+    val Route         = fillVec("M416 320h-96c-17.6 0-32-14.4-32-32s14.4-32 32-32h96s96-107 96-160-43-96-96-96-96 43-96 96c0 25.5 22.2 63.4 45.3 96H320c-52.9 0-96 43.1-96 96s43.1 96 96 96h96c17.6 0 32 14.4 32 32s-14.4 32-32 32H185.5c-16 24.8-33.8 47.7-47.3 64H416c52.9 0 96-43.1 96-96s-43.1-96-96-96zm0-256c17.7 0 32 14.3 32 32s-14.3 32-32 32-32-14.3-32-32 14.3-32 32-32zM96 256c-53 0-96 43-96 96s96 160 96 160 96-107 96-160-43-96-96-96zm0 128c-17.7 0-32-14.3-32-32s14.3-32 32-32 32 14.3 32 32-14.3 32-32 32z")
     val Navi          = Icons.Outlined.Navigation
-    val Wrench        = Icons.Outlined.Build
-    val Fuel          = Icons.Outlined.LocalGasStation
-    val History       = Icons.Outlined.History
-    val Gear          = Icons.Outlined.Settings
-    val Bt            = Icons.Outlined.Bluetooth
-    val Wifi          = Icons.Outlined.Wifi
-    val ChevronRight  = Icons.Outlined.ChevronRight
-    val ChevronLeft   = Icons.Outlined.ChevronLeft
-    val ChevronDown   = Icons.Outlined.ExpandMore
-    val Plus          = Icons.Outlined.Add
-    val Minus         = Icons.Outlined.Remove
-    val Recenter      = Icons.Outlined.MyLocation
-    val Cross         = Icons.Outlined.GpsFixed
-    val Mic           = Icons.Outlined.Mic
-    val Bell          = Icons.Outlined.Notifications
-    val Check         = Icons.Outlined.Check
-    val X             = Icons.Outlined.Close
+    val Wrench        = Icons.Rounded.Build
+    val Fuel          = Icons.Rounded.LocalGasStation
+    val History       = Icons.Rounded.History
+    val Gear          = Icons.Rounded.Settings
+    val Bt            = Icons.Rounded.Bluetooth
+    val Wifi          = Icons.Rounded.Wifi
+    val ChevronRight  = Icons.Rounded.ChevronRight
+    val ChevronLeft   = Icons.Rounded.ChevronLeft
+    val ChevronDown   = Icons.Rounded.ExpandMore
+    val Plus          = Icons.Rounded.Add
+    val Minus         = Icons.Rounded.Remove
+    val Recenter      = Icons.Rounded.MyLocation
+    val Cross         = Icons.Rounded.GpsFixed
+    val Mic           = Icons.Rounded.Mic
+    val MicOff        = Icons.Rounded.MicOff
+    val Bell          = Icons.Rounded.Notifications
+    val Check         = Icons.Rounded.Check
+    val X             = Icons.Rounded.Close
     val ArrowUp       = Icons.Outlined.Navigation
     val ArrowUpward   = Icons.Outlined.ArrowUpward
     val ArrowDownward = Icons.Outlined.ArrowDownward
-    val Reorder       = Icons.Outlined.Reorder
-    val Circle        = Icons.Outlined.RadioButtonUnchecked
-    val Gauge         = Icons.Outlined.Speed
-    val Cal           = Icons.Outlined.CalendarToday
+    val Reorder       = Icons.Rounded.Reorder
+    val Circle        = Icons.Rounded.RadioButtonUnchecked
+    val Gauge         = Icons.Rounded.Speed
+    val Cal           = Icons.Rounded.CalendarToday
     val Pin           = Icons.Outlined.Route
-    val Save          = Icons.Outlined.BookmarkBorder
-    val Share         = Icons.Outlined.Share
-    val Power         = Icons.Outlined.PowerSettingsNew
-    val Person        = Icons.Outlined.Person
-    val GroupRide     = Icons.Outlined.Groups
-    val Palette       = Icons.Outlined.Palette
-    val Search        = Icons.Outlined.Search
-    val Lock          = Icons.Outlined.Lock
-    val Mail          = Icons.Outlined.Email
-    val Chart         = Icons.Outlined.BarChart
-    val Speaker       = Icons.Outlined.VolumeUp
-    val SpeakerOff    = Icons.Outlined.VolumeOff
-    val Drop          = Icons.Outlined.WaterDrop
-    val Trend         = Icons.Outlined.TrendingUp
-    val Moon          = Icons.Outlined.DarkMode
-    val Sync          = Icons.Outlined.Sync
-    val Motor         = Icons.Outlined.TwoWheeler
-    val Car           = Icons.Outlined.DirectionsCar
-    val Swap          = Icons.Outlined.SwapVert
-    val Flag          = Icons.Outlined.Flag
-    val Clock         = Icons.Outlined.Schedule
-    val Road          = Icons.Outlined.Straighten
-    val Target        = Icons.Outlined.GpsFixed
-    val Thermo        = Icons.Outlined.Thermostat
-    val Edit          = Icons.Outlined.Edit
-    val Zap           = Icons.Outlined.Bolt
-    val Units         = Icons.Outlined.Straighten
-    val Layers        = Icons.Outlined.Layers
-    val Directions    = Icons.Outlined.Directions
-    val Download      = Icons.Outlined.Download
-    val Trash         = Icons.Outlined.Delete
-    val Help          = Icons.Outlined.HelpOutline
+    val Save          = Icons.Rounded.BookmarkBorder
+    val Share         = Icons.Rounded.Share
+    val Copy          = Icons.Rounded.ContentCopy
+    val Power         = Icons.Rounded.PowerSettingsNew
+    val Person        = Icons.Rounded.Person
+    val GroupRide     = Icons.Rounded.Groups
+    val Palette       = Icons.Rounded.Palette
+    val Search        = Icons.Rounded.Search
+    val Lock          = Icons.Rounded.Lock
+    val Mail          = Icons.Rounded.Email
+    val Chart         = Icons.Rounded.BarChart
+    val Speaker       = Icons.Rounded.VolumeUp
+    val SpeakerOff    = Icons.Rounded.VolumeOff
+    val Drop          = Icons.Rounded.WaterDrop
+    val Trend         = Icons.Rounded.TrendingUp
+    val Moon          = Icons.Rounded.DarkMode
+    val Sun           = Icons.Rounded.LightMode
+    val ThemeAuto     = Icons.Rounded.BrightnessAuto
+    val Sync          = Icons.Rounded.Sync
+    val Motor         = Icons.Rounded.TwoWheeler
+    val Car           = Icons.Rounded.DirectionsCar
+    val Swap          = Icons.Rounded.SwapVert
+    val Flag          = Icons.Rounded.Flag
+    val Clock         = Icons.Rounded.Schedule
+    val Road          = Icons.Rounded.Straighten
+    val Target        = Icons.Rounded.GpsFixed
+    val Thermo        = Icons.Rounded.Thermostat
+    val Edit          = Icons.Rounded.Edit
+    val Zap           = Icons.Rounded.Bolt
+    val Units         = Icons.Rounded.Straighten
+    val Layers        = Icons.Rounded.Layers
+    val Directions    = Icons.Rounded.Directions
+    val Download      = Icons.Rounded.Download
+    val Trash         = Icons.Rounded.Delete
+    val Map           = Icons.Rounded.Map
+    val Help          = Icons.Rounded.HelpOutline
+    val Disc          = Icons.Rounded.Album
+    val Tyre          = Icons.Rounded.Cached
 
     // ---- Custom icons (mapped to official high-quality Material icons) ----
-    val Dash          = Icons.Outlined.Dashboard
-    val Chain         = Icons.Outlined.Link
-    val LocationPin   = Icons.Outlined.Place
-    val BikeAdventure = Icons.Outlined.Terrain
-    val BikeSport     = Icons.Outlined.Speed
-    val BikeClassic   = Icons.Outlined.TwoWheeler
+    val Dash          = Icons.Rounded.Dashboard
+    val Chain         = Icons.Rounded.Link
+    val LocationPin   = Icons.Rounded.Place
+    val BikeAdventure = Icons.Rounded.Terrain
+    val BikeSport     = Icons.Rounded.Speed
+    val BikeClassic   = Icons.Rounded.TwoWheeler
 
     // ---- Directional nav arrows ----
     val TurnLeft      = Icons.Outlined.TurnLeft
@@ -171,4 +114,17 @@ private fun pathVec(vararg paths: String, strokeWidth: Float = 1.7f): ImageVecto
                 strokeLineJoin = StrokeJoin.Round,
             )
         }
+    }.build()
+
+private fun fillVec(pathData: String, viewportSize: Float = 512f): ImageVector =
+    ImageVector.Builder(
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = viewportSize,
+        viewportHeight = viewportSize,
+    ).apply {
+        addPath(
+            pathData = PathParser().parsePathString(pathData).toNodes(),
+            fill = SolidColor(Color.Black),
+        )
     }.build()

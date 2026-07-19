@@ -51,10 +51,12 @@ difference is the whole point of the project.
   and waypoint stops (stops are Mapbox-only for now).
 - **Place search:** `data/PlaceSearch.kt` — Google Places (New) first, Mapbox
   Search Box second, on-device Android Geocoder as the fallback.
-- **Backend:** **Firebase** for email auth + multi-device sync (so installing on a
-  second device restores my data). Single user, but sync is wanted.
-- **Local persistence:** on-device **SQLite** as the source of truth; Firebase
-  syncs it.
+- **Backend:** none. Firebase (auth + Firestore sync) was removed 2026-07-19 —
+  no login exists, so sync had no uid to run under (old mirror lives in git
+  history; rows keep their `sid` so a sync layer can return without a schema
+  change). Supabase is used only for the Group Ride feature (BYO keys).
+- **Local persistence:** on-device **SQLite** as the source of truth
+  (`SyncRepository` is its local-only facade).
 
 ## Features
 

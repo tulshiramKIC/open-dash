@@ -6,6 +6,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,10 +38,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import com.example.opendash.data.GroupRide
 import com.example.opendash.data.IntercomEngine
-import com.example.opendash.dash.nav.GeoPoint
+import com.example.opendash.data.NavSettings
 import com.example.opendash.ui.OpenDashIcons
 import com.example.opendash.ui.theme.*
-
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -50,9 +50,7 @@ import androidx.compose.animation.core.tween
 import kotlinx.coroutines.delay
 
 @Composable
-fun GroupRideSheet(
-    riderLat: Double?,
-    riderLng: Double?,
+fun IntercomSheet(
     initialCode: String? = null,
     onDismiss: () -> Unit,
 ) {
@@ -94,14 +92,14 @@ fun GroupRideSheet(
                 // Header
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        OpenDashIcons.GroupRide,
-                        null,
+                        painter = androidx.compose.ui.res.painterResource(com.example.opendash.R.drawable.ic_intercom),
+                        contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        "Mesh Location",
+                        "Mesh Intercom",
                         color = MaterialTheme.colorScheme.onSurface,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
@@ -113,7 +111,7 @@ fun GroupRideSheet(
 
                 when {
                     !GroupRide.isConfigured -> Text(
-                        "Group rides need a (free) Supabase project. Configure SUPABASE_URL and SUPABASE_ANON_KEY in Settings → API Keys.",
+                        "Mesh Intercom requires Supabase configuration. Configure SUPABASE_URL and SUPABASE_ANON_KEY in Settings → API Keys.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.5.sp,
                         fontFamily = GeistFamily,
@@ -130,7 +128,7 @@ fun GroupRideSheet(
                         )
                         Spacer(Modifier.height(12.dp))
                         Text(
-                            "Connecting to ride channel ${state.code}…",
+                            "Establishing secure connection to ${state.code}…",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 13.5.sp,
                             fontFamily = GeistFamily,
@@ -138,13 +136,13 @@ fun GroupRideSheet(
                         )
                     }
 
-                    state.active && state.isLocationActive -> ActiveRide(state, riderLat, riderLng) {
-                        val code = state.code ?: return@ActiveRide
+                    state.active && state.isIntercomActive -> ActiveIntercom(state) {
+                        val code = state.code ?: return@ActiveIntercom
                         val send = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
                             putExtra(
                                 Intent.EXTRA_TEXT,
-                                "Join my OpenDash Mesh Location group. Session code: *$code*",
+                                "Join my OpenDash Mesh Intercom call. Session code: *$code*",
                             )
                         }
                         ctx.startActivity(Intent.createChooser(send, "Share invite link"))
@@ -182,15 +180,16 @@ fun GroupRideSheet(
                                     return@OpenDashBtn
                                 }
                                 GroupRide.setRiderName(nameField)
-                                GroupRide.createRide()
+                                GroupRide.createRide(intercomOnly = true)
                             },
-                            icon = OpenDashIcons.GroupRide,
+                            icon = OpenDashIcons.Mic,
                             variant = BtnVariant.Primary,
                             size = BtnSize.Md,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(20.dp))
                         
+                        // Modern visual separator with text
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
@@ -238,7 +237,7 @@ fun GroupRideSheet(
                                         ) {
                                             if (codeField.isEmpty()) {
                                                 Text(
-                                                    "Enter Ride Code",
+                                                    "Enter Intercom Code",
                                                     color = MaterialTheme.colorScheme.outline,
                                                     fontSize = 13.5.sp,
                                                     fontFamily = GeistFamily
@@ -266,7 +265,7 @@ fun GroupRideSheet(
                                                 return@clickable
                                             }
                                             GroupRide.setRiderName(nameField)
-                                            GroupRide.joinRide(codeField)
+                                            GroupRide.joinRide(codeField, intercomOnly = true)
                                         }
                                         .padding(horizontal = 22.dp),
                                     contentAlignment = Alignment.Center
@@ -293,14 +292,26 @@ fun GroupRideSheet(
 }
 
 @Composable
-private fun ActiveRide(
+private fun ActiveIntercom(
     state: GroupRide.State,
-    riderLat: Double?,
-    riderLng: Double?,
     onShare: () -> Unit,
 ) {
-    val boxyShape = RoundedCornerShape(12.dp)
+    val context = LocalContext.current
     val intercomState by IntercomEngine.state.collectAsState()
+    var hasMicPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasMicPermission = granted
+        if (granted) {
+            if (intercomState.isMuted) IntercomEngine.toggleMute()
+        }
+    }
+    val boxyShape = RoundedCornerShape(12.dp)
 
     Column(Modifier.fillMaxWidth()) {
         // Invite card
@@ -362,11 +373,69 @@ private fun ActiveRide(
                 )
             }
         }
+        Spacer(Modifier.height(14.dp))
 
-        // Riders Terminal Section
+        // Intercom voice control card (Audio dashboard)
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = boxyShape,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(14.dp)
+            ) {
+                // Pulse state dot indicator
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(
+                            if (!hasMicPermission) MaterialTheme.colorScheme.outline
+                            else if (intercomState.isMuted) MaterialTheme.colorScheme.error
+                            else Ok
+                        )
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "Voice Terminal",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = GeistFamily,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                OpenDashIconBtn(
+                    icon = if (intercomState.isMuted) OpenDashIcons.MicOff else OpenDashIcons.Mic,
+                    onClick = {
+                        if (!hasMicPermission) {
+                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        } else {
+                            IntercomEngine.toggleMute()
+                        }
+                    },
+                    size = 44.dp,
+                    shape = boxyShape,
+                    active = !intercomState.isMuted,
+                    tint = if (intercomState.isMuted) MaterialTheme.colorScheme.error else null
+                )
+                Spacer(Modifier.width(8.dp))
+                OpenDashIconBtn(
+                    icon = if (intercomState.isSpeakerMuted) OpenDashIcons.SpeakerOff else OpenDashIcons.Speaker,
+                    onClick = { IntercomEngine.toggleSpeakerMute() },
+                    size = 44.dp,
+                    shape = boxyShape,
+                    active = !intercomState.isSpeakerMuted,
+                    tint = if (intercomState.isSpeakerMuted) MaterialTheme.colorScheme.error else null
+                )
+            }
+        }
+
+        // Participant Terminal Section
         Spacer(Modifier.height(18.dp))
         Text(
-            "ACTIVE RIDERS (${state.peers.size})",
+            "ACTIVE CONNECTIONS (${state.peers.size})",
             color = MaterialTheme.colorScheme.outline,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
@@ -387,7 +456,7 @@ private fun ActiveRide(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "No other riders joined yet...",
+                        "Waiting for participants to join...",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp,
                         fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
@@ -436,26 +505,15 @@ private fun ActiveRide(
                                 fontWeight = FontWeight.SemiBold,
                                 fontFamily = GeistFamily
                             )
-                            val ago = (System.currentTimeMillis() - peer.updatedAtMs) / 1000
-                            val subtitle = when {
-                                peer.isStale && ago >= 60 -> "seen ${ago / 60}m ago"
-                                peer.isStale -> "seen ${ago}s ago"
-                                else -> buildString {
-                                    append("${peer.speedKmh} km/h")
-                                    if (riderLat != null && riderLng != null) {
-                                        val d = GeoPoint.distMeters(
-                                            GeoPoint(riderLat, riderLng), GeoPoint(peer.lat, peer.lng),
-                                        )
-                                        append(" · ")
-                                        append(if (d >= 1000) "%.1f km".format(d / 1000) else "${d.toInt()} m")
-                                    }
-                                }
-                            }
                             Text(
-                                subtitle,
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontFamily = GeistMonoFamily
+                                if (peer.isStale) "Connection lost"
+                                else if (isAudioConnected) "Voice streaming link active"
+                                else "Connecting voice stream...",
+                                fontSize = 11.sp,
+                                color = if (peer.isStale) MaterialTheme.colorScheme.error
+                                        else if (isAudioConnected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontFamily = GeistFamily
                             )
                         }
                         if (isAudioConnected && !peer.isStale) {
@@ -474,7 +532,7 @@ private fun ActiveRide(
         Spacer(Modifier.height(20.dp))
         OpenDashBtn(
             "Exit",
-            onClick = { GroupRide.stopLocationOnly() },
+            onClick = { GroupRide.stopIntercomOnly() },
             variant = BtnVariant.Danger,
             size = BtnSize.Md,
             modifier = Modifier.fillMaxWidth(),
@@ -483,7 +541,7 @@ private fun ActiveRide(
 }
 
 @Composable
-private fun groupRideFieldColors() = OutlinedTextFieldDefaults.colors(
+private fun intercomFieldColors() = OutlinedTextFieldDefaults.colors(
     focusedTextColor = MaterialTheme.colorScheme.onSurface,
     unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
     focusedBorderColor = MaterialTheme.colorScheme.primary,

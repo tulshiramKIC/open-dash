@@ -56,6 +56,11 @@ data class DashUiState(
     val maneuver: String? = null,
     val maneuverType: com.example.opendash.dash.nav.ManeuverType? = null,
     val nextTurnM: Double? = null,
+    // Google-style: the maneuver AFTER the next one ("Then ↱"), and the next turn's map point.
+    val secondManeuverType: com.example.opendash.dash.nav.ManeuverType? = null,
+    val maneuverLat: Double? = null,
+    val maneuverLng: Double? = null,
+    val maneuverRoad: String? = null,
     val hasGps: Boolean = false,
     val gpsStatus: GpsStatus = GpsStatus.LOST,
     val speedKmh: Int? = null,               // GPS ground speed for the preview's cluster mock
@@ -320,10 +325,19 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             else -> "Call — ◀ decline / accept ▶"   // everything else blocked during a call
         }
 
-    private fun handleWallpaperButton(code: Int): String = when {
-        isNextWallpaperButton(code) -> { cycleWallpaper(1); "Next wallpaper" }
-        isPreviousWallpaperButton(code) -> { cycleWallpaper(-1); "Previous wallpaper" }
-        else -> "code 0x${code.toString(16).uppercase()}"
+    // Idle (wallpaper) mode mirrors the nav-mode joystick grammar: UP/DOWN act on the
+    // primary surface (wallpaper instead of zoom), LEFT/RIGHT enter MUSIC mode with the
+    // same controls + auto-exit, and calls stay modal (handled before we get here).
+    private fun handleWallpaperButton(code: Int): String {
+        val dir = decodeDir(code) ?: return "code 0x${code.toString(16).uppercase()}"
+        lastJoyInputAt = System.currentTimeMillis()
+        if (joyMusicMode) return handleMusicMode(dir)
+        return when (dir) {
+            JoyDir.UP -> { cycleWallpaper(1); "Next wallpaper" }
+            JoyDir.DOWN -> { cycleWallpaper(-1); "Previous wallpaper" }
+            JoyDir.LEFT, JoyDir.RIGHT -> { enterMusicMode(); "Music mode" }
+            JoyDir.PRESS -> ""   // unassigned while idle
+        }
     }
 
     private fun handleMapButton(code: Int): String {
@@ -372,6 +386,16 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             else -> ConnStage.OFFLINE
         }
         _ui.value = _ui.value.copy(stage = stage)
+    }
+
+    /**
+     * Start the GPS + turn-by-turn engine WITHOUT a dash connection, so the in-app Navigate
+     * screen can show real-time Google-style navigation. Idempotent; no WiFi/auth/stream and
+     * no foreground service — just location updates driving [tick]. The dash stream, when the
+     * bike is connected, runs independently via [connect].
+     */
+    fun startNavEngine() {
+        location.start()
     }
 
     // ── Connection ─────────────────────────────────────────────────────────
@@ -626,12 +650,6 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     private fun isIdleWallpaperMode(): Boolean =
         destLat == null && destLng == null && route == null
 
-    private fun isNextWallpaperButton(code: Int): Boolean =
-        code == 0x06 || code == 0x09 || code == 0x22
-
-    private fun isPreviousWallpaperButton(code: Int): Boolean =
-        code == 0x05 || code == 0x07 || code == 0x0A
-
     // ── Destination + routing ───────────────────────────────────────────────
 
     fun prefetchTiles(lat: Double, lng: Double) {
@@ -699,6 +717,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             remainingKm = null,
             etaMinutes = null,
             maneuver = null,
+            maneuverType = null,
+            secondManeuverType = null,
+            maneuverLat = null,
+            maneuverLng = null,
+            maneuverRoad = null,
             offRoute = false,
             mapZoom = zoom,
         )
@@ -838,6 +861,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         var remainingM: Double? = null
         var etaSec: Double? = null
         var nextManeuverForUi: com.example.opendash.dash.nav.Maneuver? = null
+        var secondManeuverForUi: com.example.opendash.dash.nav.Maneuver? = null
         var nextTurnM: Double? = null
         // Travel direction only, like Google Maps nav: trust the GPS bearing solely while
         // actually moving. When stationary the fused provider feeds the COMPASS into
@@ -852,6 +876,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             remainingM = ns.remainingM
             nextTurnM = ns.nextTurnM
             nextManeuverForUi = ns.nextManeuver
+            secondManeuverForUi = ns.nextManeuver2
             val headingKnown = loc.hasBearing() && loc.speed >= 1.5f
             val headingOff = headingKnown && angleDelta(loc.bearing, ns.heading) > 50f
             offRoute = when {
@@ -927,6 +952,10 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             maneuver = nextManeuverForUi?.instruction,
             maneuverType = nextManeuverForUi?.type,
             nextTurnM = nextTurnM,
+            secondManeuverType = secondManeuverForUi?.type,
+            maneuverLat = nextManeuverForUi?.location?.lat,
+            maneuverLng = nextManeuverForUi?.location?.lng,
+            maneuverRoad = nextManeuverForUi?.let { navRoadFromInstruction(it.instruction) },
             offRoute = offRoute,
         )
 
@@ -1044,13 +1073,12 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
      * internet — available now because only the dash sockets are bound to the dash WiFi.
      */
     /**
-     * Refresh the route's live traffic while riding — frugal by design: only when the setting
-     * is on, we're actually moving, and at most once every [TRAFFIC_REFRESH_MS]. Re-routes from
-     * the live position to the destination (so it's also traffic-aware rerouting) and swaps the
-     * congestion in. A failed/offline call still advances the throttle so it won't spam.
+     * Refresh the route's live traffic while riding — frugal by design: only while actually
+     * moving, and at most once every [TRAFFIC_REFRESH_MS]. Re-routes from the live position
+     * to the destination (so it's also traffic-aware rerouting) and swaps the congestion in.
+     * A failed/offline call still advances the throttle so it won't spam.
      */
     private fun maybeRefreshTraffic(loc: android.location.Location?) {
-        if (!com.example.opendash.data.NavSettings.liveTraffic.value) return
         val dLat = destLat; val dLng = destLng
         if (loc == null || dLat == null || dLng == null || route == null) return
         if (rerouting || refreshingTraffic) return
@@ -1116,6 +1144,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.value.wallpaperFit,
             )
             drawCallOverlay(canvas, bmp.width, bmp.height)
+            if (_ui.value.musicMode) drawMusicModeBadge(canvas, bmp.width, bmp.height)
             return
         }
         // Glanceable ETA — minutes remaining + a stable 12-hour arrival clock. Both come
@@ -1167,7 +1196,10 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 val hasMusic = _ui.value.showMediaOverlay && mediaInfo.nowPlaying.value != null
                 val hasNav = _ui.value.maneuver != null
                 if (hasMusic && hasNav) 58f else if (hasMusic || hasNav) 48f else 14f
-            }
+            },
+            // Day/night follows the Settings mode + clock; tick() redraws at 1 Hz, so the
+            // 7 pm / 6 am auto flip reaches the dash within a second.
+            night = com.example.opendash.data.NavSettings.nightActive(),
         )
         val canvas = Canvas(bmp)
         mapRenderer.draw(canvas, frame)
@@ -1289,6 +1321,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         val hasNav = _ui.value.maneuver != null
         if (!hasMusic && !hasNav) return
         
+        val night = com.example.opendash.data.NavSettings.nightActive()
         val centerX = width / 2f
         val centerY = height / 2f
         
@@ -1320,7 +1353,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             val fEnd = endAngle / 360f
             val positions = floatArrayOf(0.0f, maxOf(0.0f, fStart), fCenter, fEnd, 1.0f)
             
-            val borderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            val borderColors = if (night) {
+                intArrayOf(0x00000000, 0x00000000, 0x4D000000, 0x00000000, 0x00000000)
+            } else {
+                intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            }
             val borderShader = android.graphics.SweepGradient(centerX, centerY, borderColors, positions)
             val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 style = android.graphics.Paint.Style.STROKE
@@ -1330,7 +1367,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             }
             canvas.drawPath(arcPath, borderPaint)
             
-            val bgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            val bgColors = if (night) {
+                intArrayOf(0x00000000, 0x00000000, 0xB3000000.toInt(), 0x00000000, 0x00000000)
+            } else {
+                intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            }
             val bgShader = android.graphics.SweepGradient(centerX, centerY, bgColors, positions)
             val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 style = android.graphics.Paint.Style.STROKE
@@ -1350,11 +1391,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             val artX = (centerX + Rc * Math.cos(thetaRad)).toFloat()
             val artY = (centerY + Rc * Math.sin(thetaRad)).toFloat()
             
-            val whitePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                color = android.graphics.Color.WHITE
+            val baseCirclePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (night) android.graphics.Color.BLACK else android.graphics.Color.WHITE
                 style = android.graphics.Paint.Style.FILL
             }
-            canvas.drawCircle(artX, artY, 9.5f, whitePaint)
+            canvas.drawCircle(artX, artY, 8.5f, baseCirclePaint)
             
             if (track.art != null) {
                 canvas.save()
@@ -1368,7 +1409,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             
             val textStart = startOffset + artSize + spacing
             mediaOverlayTitle.textAlign = android.graphics.Paint.Align.LEFT
-            mediaOverlayTitle.color = 0xFF1E2022.toInt()
+            mediaOverlayTitle.color = if (night) android.graphics.Color.WHITE else 0xFF1E2022.toInt()
             canvas.drawTextOnPath(title, arcPath, textStart, 3.5f, mediaOverlayTitle)
             
             if (hasNav) {
@@ -1380,7 +1421,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 val tbtEdgePadding = 12f
                 
                 val tbtTextPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                    color = 0xFF1E2022.toInt()
+                    color = if (night) android.graphics.Color.WHITE else 0xFF1E2022.toInt()
                     textSize = 8.5f
                     isFakeBoldText = true
                     typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
@@ -1401,7 +1442,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 val tbtFEnd = tbtEndAngle / 360f
                 val tbtPositions = floatArrayOf(0.0f, maxOf(0.0f, tbtFStart), tbtFCenter, tbtFEnd, 1.0f)
                 
-                val tbtBorderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                val tbtBorderColors = if (night) {
+                    intArrayOf(0x00000000, 0x00000000, 0x4D000000, 0x00000000, 0x00000000)
+                } else {
+                    intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                }
                 val tbtBorderShader = android.graphics.SweepGradient(centerX, centerY, tbtBorderColors, tbtPositions)
                 val tbtBorderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     style = android.graphics.Paint.Style.STROKE
@@ -1411,7 +1456,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 canvas.drawPath(tbtArcPath, tbtBorderPaint)
                 
-                val tbtBgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                val tbtBgColors = if (night) {
+                    intArrayOf(0x00000000, 0x00000000, 0xB3000000.toInt(), 0x00000000, 0x00000000)
+                } else {
+                    intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                }
                 val tbtBgShader = android.graphics.SweepGradient(centerX, centerY, tbtBgColors, tbtPositions)
                 val tbtBgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     style = android.graphics.Paint.Style.STROKE
@@ -1431,7 +1480,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 val iconX = (centerX + RcTbt * Math.cos(tbtThetaRad)).toFloat()
                 val iconY = (centerY + RcTbt * Math.sin(tbtThetaRad)).toFloat()
                 
-                drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, _ui.value.maneuverType, 0xFF1E2022.toInt(), 2.5f)
+                drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, _ui.value.maneuverType, if (night) android.graphics.Color.WHITE else 0xFF1E2022.toInt(), 2.5f)
                 
                 val tbtTextStart = tbtStartOffset + iconSize + tbtSpacing
                 tbtTextPaint.textAlign = android.graphics.Paint.Align.LEFT
@@ -1446,7 +1495,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             val edgePadding = 14f
             
             val tbtTextPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                color = 0xFF1E2022.toInt()
+                color = if (night) android.graphics.Color.WHITE else 0xFF1E2022.toInt()
                 textSize = 10f
                 isFakeBoldText = true
                 typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
@@ -1467,7 +1516,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             val fEnd = endAngle / 360f
             val positions = floatArrayOf(0.0f, maxOf(0.0f, fStart), fCenter, fEnd, 1.0f)
             
-            val borderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            val borderColors = if (night) {
+                intArrayOf(0x00000000, 0x00000000, 0x4D000000, 0x00000000, 0x00000000)
+            } else {
+                intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            }
             val borderShader = android.graphics.SweepGradient(centerX, centerY, borderColors, positions)
             val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 style = android.graphics.Paint.Style.STROKE
@@ -1477,7 +1530,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             }
             canvas.drawPath(arcPath, borderPaint)
             
-            val bgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            val bgColors = if (night) {
+                intArrayOf(0x00000000, 0x00000000, 0xB3000000.toInt(), 0x00000000, 0x00000000)
+            } else {
+                intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+            }
             val bgShader = android.graphics.SweepGradient(centerX, centerY, bgColors, positions)
             val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 style = android.graphics.Paint.Style.STROKE
@@ -1497,7 +1554,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             val iconX = (centerX + Rc * Math.cos(thetaRad)).toFloat()
             val iconY = (centerY + Rc * Math.sin(thetaRad)).toFloat()
             
-            drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, _ui.value.maneuverType, 0xFF1E2022.toInt(), 3.0f)
+            drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, _ui.value.maneuverType, if (night) android.graphics.Color.WHITE else 0xFF1E2022.toInt(), 3.0f)
             
             val textStart = startOffset + iconSize + spacing
             tbtTextPaint.textAlign = android.graphics.Paint.Align.LEFT
@@ -1615,6 +1672,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         val remainingM: Double, val nextTurnM: Double, val heading: Float, val offRoute: Boolean,
         val snapped: GeoPoint, val snapDist: Double,
         val nextManeuver: com.example.opendash.dash.nav.Maneuver?,
+        val nextManeuver2: com.example.opendash.dash.nav.Maneuver?,   // the one AFTER next ("Then …")
     )
 
     private data class Match(val cum: Double, val dist: Double, val bearing: Float, val proj: GeoPoint)
@@ -1647,11 +1705,13 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         progressM = maxOf(progressM - 25.0, m.cum) // mostly forward, tolerate small GPS slide
 
         val remaining = (r.totalMeters - progressM).coerceAtLeast(0.0)
-        val nextMan = r.maneuvers.firstOrNull {
+        val upcoming = r.maneuvers.filter {
             it.cumulativeMeters > progressM + 1.0 && it.type != com.example.opendash.dash.nav.ManeuverType.DEPART
         }
+        val nextMan = upcoming.getOrNull(0)
+        val nextMan2 = upcoming.getOrNull(1)
         val nextTurn = nextMan?.let { (it.cumulativeMeters - progressM).coerceAtLeast(0.0) } ?: remaining
-        return NavState(remaining, nextTurn, m.bearing, m.dist > 70.0, m.proj, m.dist, nextMan)
+        return NavState(remaining, nextTurn, m.bearing, m.dist > 70.0, m.proj, m.dist, nextMan, nextMan2)
     }
 
     private fun updateThermal() {
@@ -1674,6 +1734,15 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun fmtDist(m: Double): String =
         if (m < 1000) "${m.toInt()} m" else "%.1f km".format(m / 1000.0)
+
+    /** Road name out of a maneuver instruction ("Turn right onto Baif Rd" → "Baif Rd"). */
+    private fun navRoadFromInstruction(instruction: String): String {
+        for (sep in listOf(" onto ", " on ", " toward ", " towards ")) {
+            val i = instruction.indexOf(sep, ignoreCase = true)
+            if (i >= 0) return instruction.substring(i + sep.length).trim().ifBlank { instruction }
+        }
+        return instruction
+    }
 
     private fun angleDelta(first: Float, second: Float): Float {
         val delta = (((first - second) % 360f) + 540f) % 360f - 180f

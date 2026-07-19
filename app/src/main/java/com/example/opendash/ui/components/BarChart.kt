@@ -2,6 +2,7 @@ package com.example.opendash.ui.components
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -38,8 +39,8 @@ fun OpenDashBarChart(
             val pct = entry.value / maxVal
             val best = entry.value == data.maxOf { it.value }
             val barH = (height.value - 26f) * pct
-            val barBrush = Brush.verticalGradient(listOf(Gold, GoldDeep))
-            val trackColor = Surf3
+            val barBrush = Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primary, GoldDeep))
+            val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -48,7 +49,7 @@ fun OpenDashBarChart(
             ) {
                 Text(
                     text = valueFmt(entry.value),
-                    color = if (best) Gold else TextLo,
+                    color = if (best) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     fontFamily = GeistMonoFamily,
@@ -68,7 +69,7 @@ fun OpenDashBarChart(
 
                 Text(
                     text = entry.label,
-                    color = TextLo,
+                    color = MaterialTheme.colorScheme.outline,
                     fontSize = 10.5.sp,
                     fontFamily = GeistMonoFamily,
                     modifier = Modifier.padding(top = 7.dp),

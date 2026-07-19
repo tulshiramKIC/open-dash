@@ -24,6 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -149,8 +150,11 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
 
     // Local preview state (mirrors what the dash shows)
     var satellite by rememberSaveable { mutableStateOf(false) }
-    // Rider-marker style, persisted across launches; arrow on a fresh install.
+    // Rider-marker style, persisted across launches; arrow on a fresh install. (Bike marker
+    // stays a dash-view option; the full-screen Navigate nav always uses the arrow.)
     val bikeMarker by com.example.opendash.data.NavSettings.bikeMarker.collectAsState()
+    val mapTheme by com.example.opendash.data.NavSettings.mapTheme.collectAsState()
+    val mapNight = rememberMapNight()
     var recenterKey by remember { mutableStateOf(0) }
 
     val voiceManager = remember { com.example.opendash.dash.nav.VoiceManager.get(context) }
@@ -243,20 +247,20 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                         Column(Modifier.weight(1f).padding(end = 12.dp)) {
                             Text(
                                 "Pair with this dash?",
-                                color = TextHi,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
                                 pendingSsid,
-                                color = Gold,
+                                color = MaterialTheme.colorScheme.primary,
                                 fontSize = 12.sp,
                                 fontFamily = GeistMonoFamily,
                                 modifier = Modifier.padding(top = 3.dp),
                             )
                             Text(
                                 "OpenDash will remember this exact SSID for future reconnects.",
-                                color = TextMid,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 11.5.sp,
                                 modifier = Modifier.padding(top = 4.dp),
                             )
@@ -304,7 +308,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                     .clip(CircleShape)
                     .background(Color(0xFF07090A))
                     .border(6.dp, Color(0xFF0D0F10), CircleShape)
-                    .border(2.dp, Line2, CircleShape),
+                    .border(2.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
             ) {
                 Box(
                     Modifier
@@ -328,6 +332,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                         riderBearing = ui.riderBearing,
                         zoom = ui.mapZoom.toDouble(),
                         satellite = satellite,
+                        night = mapNight,
                         recenterKey = recenterKey,
                         showAttribution = false,
                         riderIconScale = 1.35f,
@@ -385,7 +390,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                             label = "blinkColor"
                         ).value
                     } else {
-                        if (ui.offRoute) Warn else blackColor
+                        if (ui.offRoute) MaterialTheme.colorScheme.tertiary else blackColor
                     }
                     
                     val distText = nextTurnM?.let {
@@ -422,7 +427,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                     drawIntoCanvas { composeCanvas ->
                                         val canvas = composeCanvas.nativeCanvas
                                         val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                            color = 0xFF1E2022.toInt()
+                                            color = if (mapNight) android.graphics.Color.WHITE else 0xFF1E2022.toInt()
                                             textSize = 10.sp.toPx()
                                             isFakeBoldText = true
                                             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
@@ -443,7 +448,11 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                         val fEnd = endAngle / 360f
                                         val positions = floatArrayOf(0.0f, maxOf(0.0f, fStart), fCenter, fEnd, 1.0f)
                                         
-                                        val borderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        val borderColors = if (mapNight) {
+                                            intArrayOf(0x00000000, 0x00000000, 0x4D000000, 0x00000000, 0x00000000)
+                                        } else {
+                                            intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        }
                                         val borderShader = android.graphics.SweepGradient(centerX, centerY, borderColors, positions)
                                         val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                                             style = android.graphics.Paint.Style.STROKE
@@ -453,7 +462,11 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                         }
                                         canvas.drawPath(arcPath, borderPaint)
                                         
-                                        val bgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        val bgColors = if (mapNight) {
+                                            intArrayOf(0x00000000, 0x00000000, 0xB3000000.toInt(), 0x00000000, 0x00000000)
+                                        } else {
+                                            intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        }
                                         val bgShader = android.graphics.SweepGradient(centerX, centerY, bgColors, positions)
                                         val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                                             style = android.graphics.Paint.Style.STROKE
@@ -473,11 +486,11 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                         val artX = (centerX + Rc * Math.cos(thetaRad)).toFloat()
                                         val artY = (centerY + Rc * Math.sin(thetaRad)).toFloat()
                                         
-                                        val whitePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                            color = android.graphics.Color.WHITE
+                                        val baseCirclePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                            color = if (mapNight) android.graphics.Color.BLACK else android.graphics.Color.WHITE
                                             style = android.graphics.Paint.Style.FILL
                                         }
-                                        canvas.drawCircle(artX, artY, 9.5.dp.toPx(), whitePaint)
+                                        canvas.drawCircle(artX, artY, 8.5.dp.toPx(), baseCirclePaint)
                                         
                                         if (track.art != null) {
                                             canvas.save()
@@ -505,7 +518,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                     drawIntoCanvas { composeCanvas ->
                                         val canvas = composeCanvas.nativeCanvas
                                          val tbtTextPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                            color = 0xFF1E2022.toInt()
+                                            color = if (mapNight) android.graphics.Color.WHITE else 0xFF1E2022.toInt()
                                             textSize = 8.5.sp.toPx()
                                             isFakeBoldText = true
                                             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
@@ -526,7 +539,11 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                         val tbtFEnd = tbtEndAngle / 360f
                                         val tbtPositions = floatArrayOf(0.0f, maxOf(0.0f, tbtFStart), tbtFCenter, tbtFEnd, 1.0f)
                                         
-                                        val tbtBorderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        val tbtBorderColors = if (mapNight) {
+                                            intArrayOf(0x00000000, 0x00000000, 0x4D000000, 0x00000000, 0x00000000)
+                                        } else {
+                                            intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        }
                                         val tbtBorderShader = android.graphics.SweepGradient(centerX, centerY, tbtBorderColors, tbtPositions)
                                         val tbtBorderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                                             style = android.graphics.Paint.Style.STROKE
@@ -536,7 +553,11 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                         }
                                         canvas.drawPath(tbtArcPath, tbtBorderPaint)
                                         
-                                        val tbtBgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        val tbtBgColors = if (mapNight) {
+                                            intArrayOf(0x00000000, 0x00000000, 0xB3000000.toInt(), 0x00000000, 0x00000000)
+                                        } else {
+                                            intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                        }
                                         val tbtBgShader = android.graphics.SweepGradient(centerX, centerY, tbtBgColors, tbtPositions)
                                         val tbtBgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                                             style = android.graphics.Paint.Style.STROKE
@@ -556,7 +577,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                         val iconX = (centerX + RcTbt * Math.cos(tbtThetaRad)).toFloat()
                                         val iconY = (centerY + RcTbt * Math.sin(tbtThetaRad)).toFloat()
                                         
-                                        drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, ui.maneuverType, blinkingTint.toArgb(), 2.5.dp.toPx())
+                                        drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, ui.maneuverType, if (mapNight) android.graphics.Color.WHITE else blinkingTint.toArgb(), 2.5.dp.toPx())
                                         
                                         val tbtTextStart = tbtStartOffset + iconSize + tbtSpacing
                                         tbtTextPaint.textAlign = android.graphics.Paint.Align.LEFT
@@ -573,7 +594,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                 drawIntoCanvas { composeCanvas ->
                                     val canvas = composeCanvas.nativeCanvas
                                     val tbtTextPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                        color = 0xFF1E2022.toInt()
+                                        color = if (mapNight) android.graphics.Color.WHITE else 0xFF1E2022.toInt()
                                         textSize = 10.sp.toPx()
                                         isFakeBoldText = true
                                         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
@@ -594,7 +615,11 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                     val fEnd = endAngle / 360f
                                     val positions = floatArrayOf(0.0f, maxOf(0.0f, fStart), fCenter, fEnd, 1.0f)
                                     
-                                    val borderColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                    val borderColors = if (mapNight) {
+                                        intArrayOf(0x00000000, 0x00000000, 0x4D000000, 0x00000000, 0x00000000)
+                                    } else {
+                                        intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0x4DFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                    }
                                     val borderShader = android.graphics.SweepGradient(centerX, centerY, borderColors, positions)
                                     val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                                         style = android.graphics.Paint.Style.STROKE
@@ -604,7 +629,11 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                     }
                                     canvas.drawPath(arcPath, borderPaint)
                                     
-                                    val bgColors = intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                    val bgColors = if (mapNight) {
+                                        intArrayOf(0x00000000, 0x00000000, 0xB3000000.toInt(), 0x00000000, 0x00000000)
+                                    } else {
+                                        intArrayOf(0x00FFFFFF, 0x00FFFFFF, 0xB3FFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+                                    }
                                     val bgShader = android.graphics.SweepGradient(centerX, centerY, bgColors, positions)
                                     val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                                         style = android.graphics.Paint.Style.STROKE
@@ -624,7 +653,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                     val iconX = (centerX + Rc * Math.cos(thetaRad)).toFloat()
                                     val iconY = (centerY + Rc * Math.sin(thetaRad)).toFloat()
                                     
-                                    drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, ui.maneuverType, blinkingTint.toArgb(), 3.0.dp.toPx())
+                                    drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, ui.maneuverType, if (mapNight) android.graphics.Color.WHITE else blinkingTint.toArgb(), 3.0.dp.toPx())
                                     
                                     val textStart = startOffset + iconSize + spacing
                                     tbtTextPaint.textAlign = android.graphics.Paint.Align.LEFT
@@ -649,14 +678,49 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                 modifier = Modifier.align(Alignment.BottomEnd),
             )
 
-            // Rider-marker style toggle (bike ⇄ arrow). Shows the icon of the OTHER
-            // style — tap to switch the marker inside the map.
+            // Rider-marker style toggle (bike ⇄ arrow) — dash view only. Shows the icon of
+            // the OTHER style; tap to switch the marker inside the round preview.
             OpenDashIconBtn(
                 if (bikeMarker) OpenDashIcons.Navi else OpenDashIcons.Motor,
                 onClick = { com.example.opendash.data.NavSettings.setBikeMarker(context, !bikeMarker) },
                 size = 44.dp,
                 modifier = Modifier.align(Alignment.TopEnd),
             )
+
+            // Map day/night: cycles Day → Night → Auto (auto = night 7 pm–6 am). Applies
+            // to every map — dash preview, Navigate map and the streamed dash frame.
+            OpenDashIconBtn(
+                when (mapTheme) {
+                    com.example.opendash.data.NavSettings.MapTheme.DAY -> OpenDashIcons.Sun
+                    com.example.opendash.data.NavSettings.MapTheme.NIGHT -> OpenDashIcons.Moon
+                    com.example.opendash.data.NavSettings.MapTheme.AUTO -> OpenDashIcons.ThemeAuto
+                },
+                onClick = {
+                    val next = when (mapTheme) {
+                        com.example.opendash.data.NavSettings.MapTheme.DAY -> com.example.opendash.data.NavSettings.MapTheme.NIGHT
+                        com.example.opendash.data.NavSettings.MapTheme.NIGHT -> com.example.opendash.data.NavSettings.MapTheme.AUTO
+                        com.example.opendash.data.NavSettings.MapTheme.AUTO -> com.example.opendash.data.NavSettings.MapTheme.DAY
+                    }
+                    com.example.opendash.data.NavSettings.setMapTheme(context, next)
+                },
+                size = 44.dp,
+                modifier = Modifier.align(Alignment.TopStart),
+            )
+
+            // Active Group Ride Intercom mic toggle button
+            val groupRideState by com.example.opendash.data.GroupRide.state.collectAsState()
+            val intercomState by com.example.opendash.data.IntercomEngine.state.collectAsState()
+            if (groupRideState.active && groupRideState.isIntercomActive) {
+                OpenDashIconBtn(
+                    icon = if (intercomState.isMuted) OpenDashIcons.MicOff else OpenDashIcons.Mic,
+                    onClick = { com.example.opendash.data.IntercomEngine.toggleMute() },
+                    size = 44.dp,
+                    active = !intercomState.isMuted,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 52.dp)
+                )
+            }
         }
 
 
@@ -693,17 +757,17 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Surf1)
+                        .background(MaterialTheme.colorScheme.surfaceContainer)
                         .padding(vertical = 5.dp, horizontal = 6.dp),
                 ) {
                     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.Center) {
-                        Text(v, color = TextHi, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
+                        Text(v, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = GeistMonoFamily)
                         if (u.isNotEmpty()) {
                             Spacer(Modifier.width(3.dp))
-                            Text(u, color = TextLo, fontSize = 9.5.sp, fontFamily = GeistMonoFamily, modifier = Modifier.padding(bottom = 1.dp))
+                            Text(u, color = MaterialTheme.colorScheme.outline, fontSize = 9.5.sp, fontFamily = GeistMonoFamily, modifier = Modifier.padding(bottom = 1.dp))
                         }
                     }
-                    Text(k, color = TextLo, fontSize = 9.5.sp, fontFamily = GeistFamily, modifier = Modifier.padding(top = 1.dp))
+                    Text(k, color = MaterialTheme.colorScheme.outline, fontSize = 9.5.sp, fontFamily = GeistFamily, modifier = Modifier.padding(top = 1.dp))
                 }
             }
 
@@ -713,12 +777,12 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(if (satellite) GoldTint else Surf1)
+                    .background(if (satellite) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer)
                     .clickable { satellite = !satellite }
                     .padding(vertical = 5.dp, horizontal = 6.dp),
             ) {
-                Icon(OpenDashIcons.Layers, null, tint = if (satellite) Gold else TextMid, modifier = Modifier.size(17.dp))
-                Text("Satellite", color = if (satellite) Gold else TextLo, fontSize = 9.5.sp, fontFamily = GeistFamily, modifier = Modifier.padding(top = 1.dp))
+                Icon(OpenDashIcons.Layers, null, tint = if (satellite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(17.dp))
+                Text("Satellite", color = if (satellite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, fontSize = 9.5.sp, fontFamily = GeistFamily, modifier = Modifier.padding(top = 1.dp))
             }
         }
 
@@ -729,7 +793,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
             Modifier
                 .weight(1f)
                 .clip(RoundedCornerShape(12.dp))
-                .background(if (active) GoldTint else Surf1)
+                .background(if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer)
                 .clickable { onClick() }
                 .padding(vertical = 8.dp)
         }
@@ -743,52 +807,63 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = chipMod(isOff) { voiceManager.setMode(VoiceMode.OFF) }
             ) {
-                Icon(OpenDashIcons.SpeakerOff, null, tint = if (isOff) Gold else TextMid, modifier = Modifier.size(17.dp))
+                Icon(OpenDashIcons.SpeakerOff, null, tint = if (isOff) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.height(3.dp))
-                Text("Silent", color = if (isOff) Gold else TextLo, fontSize = 10.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
+                Text("Silent", color = if (isOff) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, fontSize = 10.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
             }
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = chipMod(isChime) { voiceManager.setMode(VoiceMode.CHIME) }
             ) {
-                Icon(OpenDashIcons.Bell, null, tint = if (isChime) Gold else TextMid, modifier = Modifier.size(17.dp))
+                Icon(OpenDashIcons.Bell, null, tint = if (isChime) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.height(3.dp))
-                Text("Chime", color = if (isChime) Gold else TextLo, fontSize = 10.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
+                Text("Chime", color = if (isChime) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, fontSize = 10.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
             }
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = chipMod(isFull) { voiceManager.setMode(VoiceMode.FULL) }
             ) {
-                Icon(OpenDashIcons.Speaker, null, tint = if (isFull) Gold else TextMid, modifier = Modifier.size(17.dp))
+                Icon(OpenDashIcons.Speaker, null, tint = if (isFull) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.height(3.dp))
-                Text("Voice", color = if (isFull) Gold else TextLo, fontSize = 10.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
+                Text("Voice", color = if (isFull) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, fontSize = 10.sp, fontFamily = GeistFamily, fontWeight = FontWeight.Medium)
             }
         }
 
-        // Exit navigation → free roam (keeps streaming, just drops the route)
-        if (streaming && ui.destinationName != null) {
-            Spacer(Modifier.height(16.dp))
-            OpenDashBtn(
-                "Exit navigation",
-                onClick = { vm.exitNavigation() },
-                icon = OpenDashIcons.Navi,
-                variant = BtnVariant.Ghost,
-                size = BtnSize.Md,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-
-        // Disconnect button when streaming
+        // Exit navigation & Disconnect buttons
         if (streaming) {
-            Spacer(Modifier.height(20.dp))
-            OpenDashBtn(
-                "Disconnect",
-                onClick = { vm.disconnect() },
-                icon = OpenDashIcons.Power,
-                variant = BtnVariant.Danger,
-                size = BtnSize.Md,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Spacer(Modifier.height(16.dp))
+            if (ui.destinationName != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OpenDashBtn(
+                        "Exit navigation",
+                        onClick = { vm.exitNavigation() },
+                        icon = OpenDashIcons.Navi,
+                        variant = BtnVariant.Ghost,
+                        size = BtnSize.Md,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OpenDashBtn(
+                        "Disconnect",
+                        onClick = { vm.disconnect() },
+                        icon = OpenDashIcons.Power,
+                        variant = BtnVariant.Danger,
+                        size = BtnSize.Md,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            } else {
+                OpenDashBtn(
+                    "Disconnect",
+                    onClick = { vm.disconnect() },
+                    icon = OpenDashIcons.Power,
+                    variant = BtnVariant.Danger,
+                    size = BtnSize.Md,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
     }
 }

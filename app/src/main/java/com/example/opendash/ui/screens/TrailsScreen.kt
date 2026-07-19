@@ -59,7 +59,7 @@ fun TrailsScreen(
     // Filter to find custom trails (saved locations that have a route JSON file on disk)
     val customTrails = remember(savedLocations) {
         savedLocations.filter { loc ->
-            File(context.filesDir, "route_${loc.sid}.json").exists()
+            File(context.filesDir, "trail_${loc.sid}.json").exists()
         }
     }
 
@@ -96,17 +96,17 @@ fun TrailsScreen(
     pendingTrailForNav?.let { trail ->
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { pendingTrailForNav = null },
-            containerColor = com.example.opendash.ui.theme.Bg1,
+            containerColor = MaterialTheme.colorScheme.surface,
             icon = {
-                Icon(OpenDashIcons.Route, null, tint = com.example.opendash.ui.theme.Warn, modifier = Modifier.size(28.dp))
+                Icon(OpenDashIcons.Route, null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(28.dp))
             },
             title = {
-                Text("Cancel navigation?", color = com.example.opendash.ui.theme.TextHi, fontWeight = FontWeight.Bold, fontFamily = com.example.opendash.ui.theme.GeistFamily)
+                Text("Cancel navigation?", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontFamily = com.example.opendash.ui.theme.GeistFamily)
             },
             text = {
                 Text(
                     "You have an active navigation running. Loading \"${trail.name}\" will cancel it.",
-                    color = com.example.opendash.ui.theme.TextLo, fontFamily = com.example.opendash.ui.theme.GeistFamily, fontSize = 14.sp
+                    color = MaterialTheme.colorScheme.outline, fontFamily = com.example.opendash.ui.theme.GeistFamily, fontSize = 14.sp
                 )
             },
             confirmButton = {
@@ -116,12 +116,12 @@ fun TrailsScreen(
                     pendingTrailForNav = null
                     onNavigateToRoute()
                 }) {
-                    Text("Cancel & Load Trail", color = com.example.opendash.ui.theme.Warn, fontFamily = com.example.opendash.ui.theme.GeistFamily, fontWeight = FontWeight.Bold)
+                    Text("Cancel & Load Trail", color = MaterialTheme.colorScheme.tertiary, fontFamily = com.example.opendash.ui.theme.GeistFamily, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 androidx.compose.material3.TextButton(onClick = { pendingTrailForNav = null }) {
-                    Text("Keep navigating", color = com.example.opendash.ui.theme.TextLo, fontFamily = com.example.opendash.ui.theme.GeistFamily)
+                    Text("Keep navigating", color = MaterialTheme.colorScheme.outline, fontFamily = com.example.opendash.ui.theme.GeistFamily)
                 }
             }
         )
@@ -177,7 +177,7 @@ fun TrailsScreen(
                         }
                     },
                     onExport = {
-                        val cacheFile = File(context.filesDir, "route_${trail.sid}.json")
+                        val cacheFile = File(context.filesDir, "trail_${trail.sid}.json")
                         if (cacheFile.exists()) {
                             try {
                                 val json = cacheFile.readText()
@@ -227,7 +227,7 @@ private fun TrailCard(
             Column(Modifier.weight(1f)) {
                 Text(
                     trail.name,
-                    color = TextHi,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = GeistFamily,
@@ -246,13 +246,13 @@ private fun TrailCard(
                     modifier = Modifier
                         .size(34.dp)
                         .clip(CircleShape)
-                        .background(Surf2)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                         .clickable { onExport() },
                 ) {
                     Icon(
                         OpenDashIcons.Download,
                         contentDescription = "Export GPX",
-                        tint = TextMid,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(15.dp)
                     )
                 }
@@ -266,29 +266,22 @@ private fun EmptyTrails() {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 48.dp),
+            .padding(vertical = 90.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Icon(
-            OpenDashIcons.Route,
+            painter = androidx.compose.ui.res.painterResource(com.example.opendash.R.drawable.ic_custom_trail_inactive_high),
             contentDescription = null,
-            tint = TextLo,
-            modifier = Modifier.size(48.dp)
+            tint = androidx.compose.ui.graphics.Color.Unspecified,
+            modifier = Modifier.size(200.dp)
         )
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(18.dp))
         Text(
             "No custom trails yet",
-            color = TextHi,
-            fontSize = 16.sp,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 17.sp,
             fontWeight = FontWeight.Bold,
-            fontFamily = GeistFamily
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Import a GPX file or record your own path.",
-            color = TextLo,
-            fontSize = 13.sp,
             fontFamily = GeistFamily
         )
     }
@@ -298,12 +291,12 @@ private fun EmptyTrails() {
 private fun TrailThumbnail(trailId: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var points by remember(trailId) { mutableStateOf<List<com.example.opendash.dash.nav.GeoPoint>?>(null) }
-    val pathColor = Gold
+    val pathColor = MaterialTheme.colorScheme.primary
 
     LaunchedEffect(trailId) {
         val pts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val file = File(context.filesDir, "route_${trailId}.json")
+                val file = File(context.filesDir, "trail_${trailId}.json")
                 if (file.exists()) {
                     val json = file.readText()
                     val (routes, _) = com.example.opendash.dash.nav.Route.routesFromJson(json)
@@ -320,7 +313,7 @@ private fun TrailThumbnail(trailId: String, modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center,
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
-            .background(Surf2)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         val pts = points
         if (pts != null && pts.size >= 2) {
