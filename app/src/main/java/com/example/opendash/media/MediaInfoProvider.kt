@@ -93,7 +93,10 @@ class MediaInfoProvider(private val context: Context) {
     }.getOrDefault(false)
 
     private fun bind(sessions: List<MediaController>?) {
-        val next = sessions?.firstOrNull()
+        // Skip our own session — DashKeepAliveService publishes one purely to get
+        // lock-screen controls. Binding to it would show OpenDash as the "now playing"
+        // track and make the intercom's auto-pause tell itself to pause.
+        val next = sessions?.firstOrNull { it.packageName != context.packageName }
         if (next?.sessionToken == controller?.sessionToken) {
             publish()
             return

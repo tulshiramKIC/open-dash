@@ -117,6 +117,8 @@ fun SettingsScreen(
     val themeMode by OpenDashThemeController.mode.collectAsState()
     val dynamicColor by OpenDashThemeController.dynamic.collectAsState()
     val customTrailsEnabled by NavSettings.customTrailsEnabled.collectAsState()
+    val meshCode by NavSettings.meshCode.collectAsState()
+    var meshCodeField by remember(meshCode) { mutableStateOf(meshCode) }
     remember(ctx) {
         CurrencySettings.init(ctx)
         NavSettings.init(ctx)
@@ -289,6 +291,56 @@ fun SettingsScreen(
                 },
                 last = true,
                 showBubbleBg = false,
+            )
+        }
+
+        SectionLabel("Mesh Ride")
+        SettingsGroup(padding = 14.dp) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SettingsIconBubble(OpenDashIcons.GroupRide)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Default Mesh Code",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 14.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = GeistFamily,
+                    )
+                    Text(
+                        "Shared code for Mesh Intercom and Mesh Location. Leave empty to auto-generate on start.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            // Digits for new-style short codes; letters kept so legacy 6-char codes
+            // can still be typed in.
+            val validAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            androidx.compose.material3.OutlinedTextField(
+                value = meshCodeField,
+                onValueChange = { raw ->
+                    meshCodeField = raw.uppercase().filter { it in validAlphabet }.take(6)
+                },
+                label = { Text("Mesh Code", fontFamily = GeistFamily, fontSize = 12.sp) },
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    fontFamily = GeistMonoFamily, fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    letterSpacing = 2.sp,
+                    fontWeight = FontWeight.Medium,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            com.example.opendash.ui.components.OpenDashBtn(
+                "Save",
+                onClick = { NavSettings.setMeshCode(ctx, meshCodeField) },
+                variant = com.example.opendash.ui.components.BtnVariant.Primary,
+                size = com.example.opendash.ui.components.BtnSize.Sm,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
 

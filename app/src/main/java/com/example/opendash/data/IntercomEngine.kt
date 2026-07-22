@@ -56,6 +56,22 @@ object IntercomEngine {
     private val _state = MutableStateFlow(State())
     val state = _state.asStateFlow()
 
+    /**
+     * Live microphone loudness, 0..1, for the UI meter. Kept out of [State] because it
+     * changes every audio frame and would otherwise recompose every intercom consumer.
+     */
+    private val _micLevel = MutableStateFlow(0f)
+    val micLevel = _micLevel.asStateFlow()
+
+    // Voice sits well inside this window; below the floor is helmet/wind noise, and the
+    // ceiling is short of clipping so normal speech uses most of the bar.
+    private const val MIC_FLOOR_DB = 45.0
+    private const val MIC_CEIL_DB = 80.0
+    private const val MIC_EMIT_INTERVAL_MS = 50L
+
+    @Volatile private var smoothedMicLevel = 0f
+    @Volatile private var lastMicEmitMs = 0L
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var appContext: Context? = null
     private var factory: PeerConnectionFactory? = null
@@ -71,28 +87,124 @@ object IntercomEngine {
     @Volatile private var isMusicPausedByIntercom = false
     private var voxJob: Job? = null
 
+    private class VadState {
+        var noiseFloor = 150.0
+        var speechFrames = 0
+        var silenceFrames = 0
+        var isSpeaking = false
+    }
+
+    private val vadStates = ConcurrentHashMap<String, VadState>()
+
     private fun handleAudioData(source: String, buffer: java.nio.ByteBuffer?) {
         buffer ?: return
         val limit = buffer.limit()
         if (limit <= 0) return
+
+        // Evaluate every 4th sample (8 bytes) to reduce CPU load by 75%
+        val shortCount = limit / 2
         var sum = 0.0
-        val count = limit / 2
-        for (i in 0 until count) {
+        val step = 4
+        var samplesEvaluated = 0
+        for (i in 0 until shortCount step step) {
             val low = buffer.get(i * 2).toInt() and 0xFF
             val high = buffer.get(i * 2 + 1).toInt()
             val sample = ((high shl 8) or low).toShort()
             sum += sample * sample
+            samplesEvaluated++
         }
-        val rms = Math.sqrt(sum / count)
-        if (rms > 1000.0) {
-            // Update active speakers set
-            val currentSpeakers = _state.value.activeSpeakers
-            if (!currentSpeakers.contains(source) && source != "local") {
-                _state.value = _state.value.copy(activeSpeakers = currentSpeakers + source)
-            }
+        if (samplesEvaluated == 0) return
+        processRms(source, Math.sqrt(sum / samplesEvaluated))
+    }
 
-            // Trigger VOX music pause
-            lastVoiceTime = System.currentTimeMillis()
+    /**
+     * Local mic level, straight off the capture device. A local [AudioTrack]'s sink is
+     * never fed — capture goes through the audio device module, not the track — so the
+     * mic meter and local VAD have to come from here.
+     */
+    private fun handleLocalSamples(data: ByteArray) {
+        val shortCount = data.size / 2
+        if (shortCount <= 0) return
+        var sum = 0.0
+        var samplesEvaluated = 0
+        for (i in 0 until shortCount step 4) {
+            val low = data[i * 2].toInt() and 0xFF
+            val high = data[i * 2 + 1].toInt()
+            val sample = ((high shl 8) or low).toShort()
+            sum += sample.toDouble() * sample
+            samplesEvaluated++
+        }
+        if (samplesEvaluated == 0) return
+        processRms("local", Math.sqrt(sum / samplesEvaluated))
+    }
+
+    private fun processRms(source: String, rms: Double) {
+        if (source == "local") updateMicLevel(rms)
+
+        val state = vadStates.getOrPut(source) { VadState() }
+
+        // Dynamic noise floor tracking: adapt to ambient/wind noise levels
+        if (rms < state.noiseFloor) {
+            state.noiseFloor = state.noiseFloor * 0.95 + rms * 0.05
+        } else {
+            state.noiseFloor = state.noiseFloor * 0.999 + rms * 0.001
+        }
+        state.noiseFloor = state.noiseFloor.coerceIn(50.0, 5000.0)
+
+        // Hysteresis threshold: must exceed the moving noise floor significantly
+        val isVoiceFrame = rms > (state.noiseFloor * 2.2) && rms > 300.0
+
+        if (isVoiceFrame) {
+            lastVoiceTime = System.currentTimeMillis() // Update last speaking time continuously
+            state.silenceFrames = 0
+            state.speechFrames++
+            if (state.speechFrames >= 3 && !state.isSpeaking) { // 3 consecutive frames (~30ms)
+                state.isSpeaking = true
+                updateSpeakerState(source, true)
+            }
+        } else {
+            state.speechFrames = 0
+            state.silenceFrames++
+            if (state.silenceFrames >= 20 && state.isSpeaking) { // 20 consecutive silence frames (~200ms)
+                state.isSpeaking = false
+                updateSpeakerState(source, false)
+            }
+        }
+    }
+
+    /**
+     * Maps the raw RMS onto a 0..1 bar position. Log-scaled, because linear amplitude
+     * makes normal speech look like a barely-moving nub.
+     */
+    private fun updateMicLevel(rms: Double) {
+        if (_state.value.isMuted) {
+            if (smoothedMicLevel != 0f) {
+                smoothedMicLevel = 0f
+                _micLevel.value = 0f
+            }
+            return
+        }
+        val db = 20.0 * Math.log10(rms.coerceAtLeast(1.0))
+        val raw = ((db - MIC_FLOOR_DB) / (MIC_CEIL_DB - MIC_FLOOR_DB)).coerceIn(0.0, 1.0).toFloat()
+        // Fast attack so speech onset registers instantly, slow release so the bar decays
+        // smoothly instead of strobing between syllables.
+        smoothedMicLevel = if (raw > smoothedMicLevel) raw else smoothedMicLevel * 0.82f + raw * 0.18f
+
+        val now = System.currentTimeMillis()
+        if (now - lastMicEmitMs >= MIC_EMIT_INTERVAL_MS) {
+            lastMicEmitMs = now
+            _micLevel.value = smoothedMicLevel
+        }
+    }
+
+    private fun updateSpeakerState(source: String, isSpeaking: Boolean) {
+        if (isSpeaking) {
+            if (source != "local") {
+                val currentSpeakers = _state.value.activeSpeakers
+                if (!currentSpeakers.contains(source)) {
+                    _state.value = _state.value.copy(activeSpeakers = currentSpeakers + source)
+                }
+            }
             if (!isMusicPausedByIntercom) {
                 isMusicPausedByIntercom = true
                 scope.launch(Dispatchers.Main) {
@@ -100,7 +212,6 @@ object IntercomEngine {
                 }
             }
         } else {
-            // Speaker became silent
             if (source != "local") {
                 val currentSpeakers = _state.value.activeSpeakers
                 if (currentSpeakers.contains(source)) {
@@ -151,9 +262,18 @@ object IntercomEngine {
 
             if (factory == null) {
                 val rootEglBase = EglBase.create()
+                val audioAttributes = android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+
                 val adm = org.webrtc.audio.JavaAudioDeviceModule.builder(appContext!!)
+                    .setAudioAttributes(audioAttributes)
                     .setUseHardwareAcousticEchoCanceler(true)
                     .setUseHardwareNoiseSuppressor(true)
+                    .setSamplesReadyCallback { samples ->
+                        samples?.data?.let { handleLocalSamples(it) }
+                    }
                     .createAudioDeviceModule()
 
                 factory = PeerConnectionFactory.builder()
@@ -193,16 +313,18 @@ object IntercomEngine {
         runCatching {
             val audioConstraints = MediaConstraints().apply {
                 mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+                mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "true"))
                 mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+                mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl2", "true"))
                 mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
                 mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+                mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "true"))
+                mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
             }
             localAudioSource = fac.createAudioSource(audioConstraints)
+            // No sink here: local level comes from the ADM's samples-ready callback.
             localAudioTrack = fac.createAudioTrack("ARDAMSa0", localAudioSource).apply {
                 setEnabled(!_state.value.isMuted)
-                addSink { data, _, _, _, _, _ ->
-                    handleAudioData("local", data)
-                }
             }
             setSpeakerphoneEnabled(true)
             lastVoiceTime = 0L
@@ -231,6 +353,10 @@ object IntercomEngine {
         val newMuted = !_state.value.isMuted
         localAudioTrack?.setEnabled(!newMuted)
         _state.value = _state.value.copy(isMuted = newMuted)
+        if (newMuted) {
+            smoothedMicLevel = 0f
+            _micLevel.value = 0f
+        }
     }
 
     fun toggleSpeakerMute() {
@@ -305,10 +431,11 @@ object IntercomEngine {
     }
 
     private fun optimizeSdpForLowNetwork(sdp: String): String {
+        val targetParams = "useinbandfec=1;usedtx=1;maxaveragebitrate=24000;stereo=0;sprop-stereo=0;ptime=20;maxptime=60"
         return if (sdp.contains("useinbandfec=1")) {
-            sdp.replace("useinbandfec=1", "useinbandfec=1;usedtx=1;maxaveragebitrate=12000")
+            sdp.replace("useinbandfec=1", targetParams)
         } else if (sdp.contains("opus/48000/2")) {
-            sdp.replace("opus/48000/2", "opus/48000/2\r\na=fmtp:111 useinbandfec=1;usedtx=1;maxaveragebitrate=12000")
+            sdp.replace("opus/48000/2", "opus/48000/2\r\na=fmtp:111 $targetParams")
         } else sdp
     }
 
@@ -318,12 +445,33 @@ object IntercomEngine {
                 if (sender.track()?.kind() == "audio") {
                     val params = sender.parameters
                     params.encodings.forEach { encoding ->
-                        encoding.maxBitrateBps = 12_000 // 12 kbps ultra-low network cap
+                        encoding.maxBitrateBps = 24_000 // crystal-clear mono voice at 24 kbps
                     }
                     sender.parameters = params
                 }
             }
         }
+    }
+
+    private fun restartIceForPeer(peerId: String) {
+        val pc = peerConnections[peerId] ?: return
+        if (!_state.value.isIntercomActive) return
+        DebugLog.d(TAG) { "Initiating ICE restart for peerId=$peerId" }
+        val mediaConstraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
+            mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+        }
+        pc.createOffer(object : SimpleSdpObserver() {
+            override fun onCreateSuccess(sdp: SessionDescription?) {
+                sdp ?: return
+                val optSdp = SessionDescription(sdp.type, optimizeSdpForLowNetwork(sdp.description))
+                pc.setLocalDescription(SimpleSdpObserver(), optSdp)
+                applyLowBitrateAudioParams(pc)
+                signalingCallback?.invoke(peerId, "offer", optSdp.description)
+                DebugLog.d(TAG) { "Created ICE restart SDP offer for peerId=$peerId" }
+            }
+        }, mediaConstraints)
     }
 
     fun handleIceCandidate(fromPeerId: String, sdpMid: String, sdpMLineIndex: Int, candidateStr: String) {
@@ -334,6 +482,7 @@ object IntercomEngine {
 
     fun removePeer(peerId: String) {
         activeAudioTracks.remove(peerId)
+        vadStates.remove(peerId)
         peerConnections.remove(peerId)?.apply {
             close()
             playLeaveTone()
@@ -369,6 +518,7 @@ object IntercomEngine {
     fun stopIntercom() {
         callJob?.cancel(); callJob = null
         stopVoxMonitoring()
+        vadStates.clear()
         runCatching {
             peerConnections.values.forEach { pc ->
                 runCatching { pc.close() }
@@ -383,6 +533,8 @@ object IntercomEngine {
         localAudioSource = null
         localAudioTrack = null
         setSpeakerphoneEnabled(false)
+        smoothedMicLevel = 0f
+        _micLevel.value = 0f
         _state.value = State()
         DebugLog.d(TAG) { "Intercom stopped and connections closed" }
     }
@@ -398,13 +550,28 @@ object IntercomEngine {
         runCatching {
             val audioManager = ctx.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return
             if (on) {
+                // MODE_IN_COMMUNICATION is what switches a Bluetooth headset into HFP/SCO so
+                // its microphone works — A2DP (music) has no mic path. Required for a headset
+                // intercom, so it stays even though it makes the phone act "in a call".
                 audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    val speakerDevice = audioManager.availableCommunicationDevices.firstOrNull {
-                        it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                    }
-                    if (speakerDevice != null) {
-                        audioManager.setCommunicationDevice(speakerDevice)
+                    // Riders wear a headset and it carries the mic, so route to it first:
+                    // Bluetooth (classic SCO, then LE Audio), then wired, and only fall back
+                    // to the phone's own speaker+mic when nothing is connected. The old code
+                    // hard-pinned the built-in speaker, which hijacked audio away from a
+                    // paired helmet headset entirely.
+                    val devices = audioManager.availableCommunicationDevices
+                    fun pick(vararg types: Int) = devices.firstOrNull { it.type in types }
+                    val target = pick(android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+                        ?: pick(android.media.AudioDeviceInfo.TYPE_BLE_HEADSET)
+                        ?: pick(
+                            android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                            android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+                        )
+                        ?: pick(android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+                    if (target != null) {
+                        audioManager.setCommunicationDevice(target)
+                        DebugLog.d(TAG) { "Intercom audio routed to ${target.type} (${target.productName})" }
                     }
                 } else {
                     @Suppress("DEPRECATION")
@@ -454,6 +621,9 @@ object IntercomEngine {
                     playJoinTone()
                 } else if (newState == PeerConnection.IceConnectionState.DISCONNECTED || newState == PeerConnection.IceConnectionState.FAILED) {
                     playLeaveTone()
+                    if (newState == PeerConnection.IceConnectionState.FAILED) {
+                        restartIceForPeer(peerId)
+                    }
                 }
             }
             override fun onIceConnectionReceivingChange(receiving: Boolean) {}

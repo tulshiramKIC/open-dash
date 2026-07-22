@@ -85,6 +85,31 @@ fun HomeScreen(
     val incomingCall by dashViewModel.incomingCall.collectAsState()
     val isNavigating = routeState.navigating
 
+    val homeCtx = androidx.compose.ui.platform.LocalContext.current
+    val groupRideState by com.example.opendash.data.GroupRide.state.collectAsState()
+    var showGroupRide by remember { mutableStateOf(false) }
+    var showIntercom by remember { mutableStateOf(false) }
+    val intercomMicLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) showIntercom = true
+    }
+
+    if (showGroupRide) {
+        GroupRideSheet(
+            riderLat = null,
+            riderLng = null,
+            initialCode = null,
+            onDismiss = { showGroupRide = false },
+        )
+    }
+    if (showIntercom) {
+        IntercomSheet(
+            initialCode = null,
+            onDismiss = { showIntercom = false },
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -225,7 +250,43 @@ fun HomeScreen(
             }
         }
 
-
+        // ── Group ride + intercom ──
+        if (com.example.opendash.data.GroupRide.isConfigured) {
+            Spacer(Modifier.height(16.dp))
+            OpenDashCard(
+                glow = groupRideState.active,
+                padding = 18.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OpenDashBtn(
+                        label = if (groupRideState.active && groupRideState.isLocationActive) "Sharing" else "Group ride",
+                        icon = OpenDashIcons.GroupRide,
+                        variant = if (groupRideState.active && groupRideState.isLocationActive) BtnVariant.Primary else BtnVariant.Secondary,
+                        onClick = { showGroupRide = true },
+                        size = BtnSize.Sm,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OpenDashBtn(
+                        label = if (groupRideState.active && groupRideState.isIntercomActive) "Intercom on" else "Intercom",
+                        icon = OpenDashIcons.Mic,
+                        variant = if (groupRideState.active && groupRideState.isIntercomActive) BtnVariant.Primary else BtnVariant.Secondary,
+                        onClick = {
+                            if (androidx.core.content.ContextCompat.checkSelfPermission(
+                                    homeCtx, android.Manifest.permission.RECORD_AUDIO
+                                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                            ) {
+                                showIntercom = true
+                            } else {
+                                intercomMicLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                            }
+                        },
+                        size = BtnSize.Sm,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
 
         val activeDest = if (routeState.navigating) routeState.destination?.name else null
         if (!activeDest.isNullOrBlank()) {

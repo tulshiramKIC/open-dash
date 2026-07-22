@@ -110,6 +110,7 @@ private const val NAV_TILT = 0.0
 private const val PREVIEW_TOP_PADDING = 320
 private const val PREVIEW_BOTTOM_PADDING = 1500
 private const val RIDER_ICON = "rider-bike"
+private const val BIKE_BEAM_ICON = "rider-bike-beam"
 private const val CHEVRON_ICON = "rider-chevron"
 private const val DOT_ICON = "rider-dot"
 private const val DOT_BEAM_ICON = "rider-dot-beam"
@@ -371,6 +372,7 @@ fun OpenDashMap(
             if (satellite) addSatelliteImagery(style)
             disable3dBuildings(style, night)
             style.addImage(RIDER_ICON, bikeMarkerBitmap(context))
+            style.addImage(BIKE_BEAM_ICON, bikeBeamBitmap())
             style.addImage(CHEVRON_ICON, chevronBitmap())
             style.addImage(DOT_ICON, riderDotBitmap())
             style.addImage(DOT_BEAM_ICON, riderDotBeamBitmap())
@@ -634,19 +636,43 @@ fun OpenDashMap(
 
         // 2. Rider marker: navigation chevron or standard location blue dot
         if (riderLat != null && riderLng != null) {
-            val sym = if (navMode) sm.create(
-                SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
-                    .withIconImage(if (bikeMarker) RIDER_ICON else CHEVRON_ICON)
-                    .withIconRotate(markerBearing ?: riderBearing)
-                    .withIconSize(riderIconScale)
-                    .withIconAnchor(if (bikeMarker) org.maplibre.android.style.layers.Property.ICON_ANCHOR_TOP else org.maplibre.android.style.layers.Property.ICON_ANCHOR_CENTER)
-            ) else sm.create(
-                SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
-                    .withIconImage(if (markerBearing != null) DOT_BEAM_ICON else DOT_ICON)
-                    .withIconRotate(markerBearing ?: 0f)
-                    .withIconSize(riderIconScale)
-            )
-            dynamicSymbols += sym
+            if (navMode) {
+                if (bikeMarker) {
+                    val beamSym = sm.create(
+                        SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
+                            .withIconImage(BIKE_BEAM_ICON)
+                            .withIconRotate(markerBearing ?: riderBearing ?: 0f)
+                            .withIconSize(riderIconScale)
+                            .withIconAnchor(org.maplibre.android.style.layers.Property.ICON_ANCHOR_CENTER)
+                    )
+                    val bikeSym = sm.create(
+                        SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
+                            .withIconImage(RIDER_ICON)
+                            .withIconRotate(riderBearing ?: 0f)
+                            .withIconSize(riderIconScale)
+                            .withIconAnchor(org.maplibre.android.style.layers.Property.ICON_ANCHOR_TOP)
+                    )
+                    dynamicSymbols += beamSym
+                    dynamicSymbols += bikeSym
+                } else {
+                    val sym = sm.create(
+                        SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
+                            .withIconImage(CHEVRON_ICON)
+                            .withIconRotate(markerBearing ?: riderBearing ?: 0f)
+                            .withIconSize(riderIconScale)
+                            .withIconAnchor(org.maplibre.android.style.layers.Property.ICON_ANCHOR_CENTER)
+                    )
+                    dynamicSymbols += sym
+                }
+            } else {
+                val sym = sm.create(
+                    SymbolOptions().withLatLng(LatLng(riderLat, riderLng))
+                        .withIconImage(if (markerBearing != null) DOT_BEAM_ICON else DOT_ICON)
+                        .withIconRotate(markerBearing ?: 0f)
+                        .withIconSize(riderIconScale)
+                )
+                dynamicSymbols += sym
+            }
         }
 
         // 3. Group Ride peers
@@ -654,8 +680,11 @@ fun OpenDashMap(
             val colorIdx = Math.abs(peer.id.hashCode()) % PEER_COLORS.size
             val color = if (peer.isStale) 0xFF9AA0A6.toInt() else PEER_COLORS[colorIdx]
             val initial = peer.name.trim().take(1).uppercase().ifBlank { "?" }
-            val iconId = "$PEER_ICON_PREFIX$colorIdx-$initial-${peer.isStale}"
-            if (style.getImage(iconId) == null) style.addImage(iconId, peerPinBitmap(color, initial))
+            val face = if (peer.bike.isBlank()) initial else "b${peer.bike.hashCode()}"
+            val iconId = "$PEER_ICON_PREFIX$colorIdx-$face-${peer.isStale}"
+            if (style.getImage(iconId) == null) {
+                style.addImage(iconId, peerPinBitmap(context, color, initial, peer.bike, peer.isStale))
+            }
             val label = if (riderLat != null && riderLng != null) {
                 val d = GeoPoint.distMeters(GeoPoint(riderLat, riderLng), GeoPoint(peer.lat, peer.lng))
                 peer.name + "\n" + (if (d >= 1000) "%.1f km".format(d / 1000) else "${d.toInt()} m")
@@ -984,7 +1013,7 @@ private fun chevronBitmap(): Bitmap {
 private fun bikeMarkerBitmap(context: Context): Bitmap {
     runCatching {
         val svg = com.caverock.androidsvg.SVG.getFromResource(context.resources, com.example.opendash.R.raw.bike_marker)
-        val h = 120
+        val h = 80
         val w = (h * svg.documentViewBox.width() / svg.documentViewBox.height()).toInt().coerceAtLeast(1)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         svg.documentWidth = w.toFloat()
@@ -998,10 +1027,11 @@ private fun bikeMarkerBitmap(context: Context): Bitmap {
 /** Hand-drawn fallback: golden beak fender and tank, windscreen, wide bars with
  *  handguards, black seat and tyres — with a white contrast outline. */
 private fun drawnBikeMarkerBitmap(): Bitmap {
-    val w = 64
-    val h = 112
+    val w = 42
+    val h = 74
     val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val c = Canvas(bmp)
+    c.scale(42f / 64f, 74f / 112f)
     val cx = 32f
     val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = android.graphics.Color.WHITE
@@ -1048,7 +1078,7 @@ private fun drawnBikeMarkerBitmap(): Bitmap {
         close()
     }, 0xFFE0A62E.toInt())
     // Seat, black, running back from the tank (no rider on the marker).
-    roundRect(cx - 10f, 64f, cx + 10f, 92f, 7f, 0xFF1C1E20.toInt())
+    roundRect(cx - 10f, 64f, cx + 10f, 92f, 7f, 0xFF000000.toInt())
     // Rear wheel.
     roundRect(cx - 6f, 94f, cx + 6f, 110f, 5f, 0xFF17191B.toInt())
     return bmp
@@ -1088,8 +1118,9 @@ private fun riderDotBeamBitmap(): Bitmap {
 }
 
 /** Group Ride peer pin: teardrop marker (colored fill, white ring, drop shadow) with the
- *  rider's initial inside — delivery-app style, sized to be readable at a glance. */
-private fun peerPinBitmap(color: Int, initial: String): Bitmap {
+ *  rider's garage bike photo inside — falls back to the rider's initial when no bike is
+ *  shared (older client / no vehicle set up). Delivery-app style, readable at a glance. */
+private fun peerPinBitmap(context: Context, color: Int, initial: String, bike: String, stale: Boolean): Bitmap {
     val w = 76
     val h = 92
     val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -1125,6 +1156,36 @@ private fun peerPinBitmap(color: Int, initial: String): Bitmap {
     p.color = color
     c.drawPath(tail, p)
     c.drawCircle(cx, headCy, headR, p)
+
+    // Bike photo, center-cropped into the head circle (white ring stays around it).
+    if (bike.isNotBlank()) {
+        val photo = android.graphics.BitmapFactory.decodeResource(
+            context.resources,
+            com.example.opendash.ui.screens.getBikeDefaultDrawable(bike),
+        )
+        if (photo != null) {
+            val save = c.save()
+            c.clipPath(Path().apply { addCircle(cx, headCy, headR, Path.Direction.CW) })
+            val target = headR * 2f
+            val scale = maxOf(target / photo.width, target / photo.height)
+            val dw = photo.width * scale
+            val dh = photo.height * scale
+            val photoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            // Stale peers desaturate, matching the greyed name label.
+            if (stale) {
+                photoPaint.colorFilter = android.graphics.ColorMatrixColorFilter(
+                    android.graphics.ColorMatrix().apply { setSaturation(0f) },
+                )
+            }
+            c.drawBitmap(
+                photo, null,
+                android.graphics.RectF(cx - dw / 2f, headCy - dh / 2f, cx + dw / 2f, headCy + dh / 2f),
+                photoPaint,
+            )
+            c.restoreToCount(save)
+            return bmp
+        }
+    }
 
     // Rider initial, white and bold, centered in the head.
     val t = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1367,5 +1428,28 @@ private fun closestPointIndex(points: List<GeoPoint>, rider: GeoPoint): Int {
         if (d < bestDist) { bestDist = d; bestIdx = i }
     }
     return bestIdx
+}
+
+/** Pure translucent blue beam to show bike direction without rotating the bike marker. */
+private fun bikeBeamBitmap(): Bitmap {
+    val s = 192
+    val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    val cx = s / 2f
+    val cy = s / 2f
+    p.shader = android.graphics.LinearGradient(
+        cx, cy, cx, cy - 45f,
+        android.graphics.Color.argb(210, 66, 133, 244),
+        android.graphics.Color.argb(0, 66, 133, 244),
+        android.graphics.Shader.TileMode.CLAMP,
+    )
+    c.drawPath(Path().apply {
+        moveTo(cx, cy)
+        lineTo(cx - 30f, cy - 45f)
+        lineTo(cx + 30f, cy - 45f)
+        close()
+    }, p)
+    return bmp
 }
 

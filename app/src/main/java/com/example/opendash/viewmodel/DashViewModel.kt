@@ -186,6 +186,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var wallpaperFrameRevision = 0
 
     companion object {
+        val activeViewModel = MutableStateFlow<DashViewModel?>(null)
         private const val FORCE_REDRAW_MS = 2_000L
         private const val TRAFFIC_REFRESH_MS = 120_000L   // live traffic re-fetch cadence
         private const val SMOOTH_TAU = 0.28      // camera smoothing time constant (s)
@@ -235,6 +236,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
+        activeViewModel.value = this
         com.example.opendash.data.NavSettings.init(app)
         com.example.opendash.data.ApiKeys.init(app)
         com.example.opendash.data.GroupRide.init(app)
@@ -850,7 +852,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             exitMusicMode()
         }
 
-        val loc = location.location.value
+        val loc = location.location.value ?: location.lastKnown()
         val r = route
         val dLat = destLat; val dLng = destLng
 
@@ -1827,6 +1829,9 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
+        if (activeViewModel.value == this) {
+            activeViewModel.value = null
+        }
         mediaInfo.stop()
         stopRecording()        // save the in-progress ride if the app is closed mid-session
         teardown()

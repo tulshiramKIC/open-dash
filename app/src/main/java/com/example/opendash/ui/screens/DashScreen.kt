@@ -377,12 +377,12 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                     }
                     val nextTurnM = ui.nextTurnM
                     val isCloseToTurn = nextTurnM != null && nextTurnM < 100.0
-                    val blackColor = Color(0xFF1E2022)
+                    val baseColor = if (mapNight) Color.White else Color(0xFF1E2022)
                     val blinkingTint = if (isCloseToTurn) {
                         val infiniteTransition = rememberInfiniteTransition(label = "blinkingTurnIcon")
                         infiniteTransition.animateColor(
                             initialValue = Color(0xFFFF3B30),
-                            targetValue = blackColor,
+                            targetValue = baseColor,
                             animationSpec = infiniteRepeatable(
                                 animation = tween(durationMillis = 400, easing = LinearEasing),
                                 repeatMode = RepeatMode.Reverse
@@ -390,7 +390,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                             label = "blinkColor"
                         ).value
                     } else {
-                        if (ui.offRoute) MaterialTheme.colorScheme.tertiary else blackColor
+                        if (ui.offRoute) MaterialTheme.colorScheme.tertiary else baseColor
                     }
                     
                     val distText = nextTurnM?.let {
@@ -577,7 +577,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                         val iconX = (centerX + RcTbt * Math.cos(tbtThetaRad)).toFloat()
                                         val iconY = (centerY + RcTbt * Math.sin(tbtThetaRad)).toFloat()
                                         
-                                        drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, ui.maneuverType, if (mapNight) android.graphics.Color.WHITE else blinkingTint.toArgb(), 2.5.dp.toPx())
+                                        drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, ui.maneuverType, blinkingTint.toArgb(), 2.5.dp.toPx())
                                         
                                         val tbtTextStart = tbtStartOffset + iconSize + tbtSpacing
                                         tbtTextPaint.textAlign = android.graphics.Paint.Align.LEFT
@@ -653,7 +653,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                                     val iconX = (centerX + Rc * Math.cos(thetaRad)).toFloat()
                                     val iconY = (centerY + Rc * Math.sin(thetaRad)).toFloat()
                                     
-                                    drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, ui.maneuverType, if (mapNight) android.graphics.Color.WHITE else blinkingTint.toArgb(), 3.0.dp.toPx())
+                                    drawManeuverArrow(canvas, iconX - iconSize/2f, iconY - iconSize/2f, iconSize, ui.maneuverType, blinkingTint.toArgb(), 3.0.dp.toPx())
                                     
                                     val textStart = startOffset + iconSize + spacing
                                     tbtTextPaint.textAlign = android.graphics.Paint.Align.LEFT
@@ -707,20 +707,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                 modifier = Modifier.align(Alignment.TopStart),
             )
 
-            // Active Group Ride Intercom mic toggle button
-            val groupRideState by com.example.opendash.data.GroupRide.state.collectAsState()
-            val intercomState by com.example.opendash.data.IntercomEngine.state.collectAsState()
-            if (groupRideState.active && groupRideState.isIntercomActive) {
-                OpenDashIconBtn(
-                    icon = if (intercomState.isMuted) OpenDashIcons.MicOff else OpenDashIcons.Mic,
-                    onClick = { com.example.opendash.data.IntercomEngine.toggleMute() },
-                    size = 44.dp,
-                    active = !intercomState.isMuted,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(start = 52.dp)
-                )
-            }
+
         }
 
 
@@ -738,7 +725,10 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
         Spacer(Modifier.height(14.dp))
 
         // Live info strip — real remaining distance, ETA + satellite toggle
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.height(IntrinsicSize.Max)
+        ) {
             listOf(
                 Triple(
                     ui.remainingKm?.let { if (it >= 10) "%.0f".format(it) else "%.1f".format(it) } ?: "—",
@@ -756,6 +746,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .weight(1f)
+                        .fillMaxHeight()
                         .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.surfaceContainer)
                         .padding(vertical = 5.dp, horizontal = 6.dp),
@@ -776,6 +767,7 @@ fun DashScreen(vm: DashViewModel = viewModel()) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
                     .weight(1f)
+                    .fillMaxHeight()
                     .clip(RoundedCornerShape(12.dp))
                     .background(if (satellite) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer)
                     .clickable { satellite = !satellite }

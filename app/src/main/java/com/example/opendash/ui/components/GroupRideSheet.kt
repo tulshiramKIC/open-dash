@@ -58,8 +58,9 @@ fun GroupRideSheet(
 ) {
     val ctx = LocalContext.current
     val state by GroupRide.state.collectAsState()
+    val meshCode by com.example.opendash.data.NavSettings.meshCode.collectAsState()
     var nameField by remember(state.riderName) { mutableStateOf(state.riderName) }
-    var codeField by remember(initialCode) { mutableStateOf(initialCode ?: "") }
+    var codeField by remember(initialCode, meshCode) { mutableStateOf(initialCode ?: meshCode) }
     var isNameError by remember { mutableStateOf(false) }
     val boxyShape = RoundedCornerShape(12.dp)
 
@@ -174,8 +175,12 @@ fun GroupRideSheet(
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(14.dp))
+                        // A saved mesh code makes this a fixed mesh: there's nothing to
+                        // "start" and no other code to join, so say what the button does
+                        // and drop the join-by-code section entirely.
+                        val savedCode = meshCode.takeIf { GroupRide.isValidCode(it) }
                         OpenDashBtn(
-                            "Start",
+                            if (savedCode != null) "Join with $savedCode" else "Start",
                             onClick = {
                                 if (nameField.isBlank()) {
                                     isNameError = true
@@ -189,8 +194,9 @@ fun GroupRideSheet(
                             size = BtnSize.Md,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        if (savedCode == null) {
                         Spacer(Modifier.height(20.dp))
-                        
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
@@ -280,6 +286,7 @@ fun GroupRideSheet(
                                     )
                                 }
                             }
+                        }
                         }
                         state.error?.let {
                             Spacer(Modifier.height(12.dp))
@@ -411,7 +418,8 @@ private fun ActiveRide(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
                     ) {
-                        // Boxy Initial Avatar
+                        // Avatar: the bike they chose in Garage; initial letter when the
+                        // peer didn't share one (older client / no vehicle set up).
                         Box(
                             modifier = Modifier
                                 .size(34.dp)
@@ -419,13 +427,26 @@ private fun ActiveRide(
                                 .background(avatarColor),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                peer.name.trim().take(1).uppercase(),
-                                color = Color.White,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = GeistFamily
-                            )
+                            if (peer.bike.isNotBlank()) {
+                                androidx.compose.foundation.Image(
+                                    painter = androidx.compose.ui.res.painterResource(
+                                        com.example.opendash.ui.screens.getBikeDefaultDrawable(peer.bike)
+                                    ),
+                                    contentDescription = peer.bike,
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize(),
+                                    // Stale peers grey out, same as their name text.
+                                    alpha = if (peer.isStale) 0.35f else 1f,
+                                )
+                            } else {
+                                Text(
+                                    peer.name.trim().take(1).uppercase(),
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = GeistFamily
+                                )
+                            }
                         }
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {

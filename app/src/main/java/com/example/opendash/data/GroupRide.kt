@@ -44,9 +44,17 @@ object GroupRide {
     private const val KEY_NAME = "rider_name"
     private const val KEY_DEVICE_ID = "device_id"
 
-    /** No ambiguous chars (0/O, 1/I/L) — the code is read aloud in helmets. */
-    private const val CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-    private const val CODE_LENGTH = 6
+    /**
+     * Digits only, short — the code is read aloud in helmets, and since Supabase keys
+     * are bring-your-own the channel namespace is private to this rider group, so a
+     * 3-digit code is collision-safe in practice. Longer legacy alphanumeric codes
+     * (up to 6 chars) remain joinable.
+     */
+    private const val CODE_ALPHABET = "0123456789"
+    private const val CODE_LENGTH = 3
+    private val CODE_REGEX = Regex("[A-Z0-9]{2,6}")
+
+    fun isValidCode(code: String): Boolean = CODE_REGEX.matches(code)
 
     // Quota grows with riders² (send + everyone's receive); 5 s keeps even frequent
     // rides at a rounding error of the free 2M msgs/month.
@@ -63,6 +71,8 @@ object GroupRide {
     data class Peer(
         val id: String,
         val name: String,
+        /** The rider's garage bike title (e.g. "KTM 390 Adventure"); "" if unknown. */
+        val bike: String,
         val lat: Double,
         val lng: Double,
         val bearing: Float,
@@ -138,14 +148,21 @@ object GroupRide {
             }
             return existingCode
         }
-        val code = (1..CODE_LENGTH).map { CODE_ALPHABET.random() }.joinToString("")
+        val configured = NavSettings.meshCode.value
+        val code = if (isValidCode(configured)) {
+            configured
+        } else {
+            (1..CODE_LENGTH).map { CODE_ALPHABET.random() }.joinToString("").also { generated ->
+                appContext?.let { NavSettings.setMeshCode(it, generated) }
+            }
+        }
         joinRide(code, intercomOnly)
         return code
     }
 
     fun joinRide(rawCode: String, intercomOnly: Boolean = false) {
         val code = rawCode.trim().uppercase()
-        if (code.length != CODE_LENGTH || code.any { it !in CODE_ALPHABET }) {
+        if (!isValidCode(code)) {
             _state.value = _state.value.copy(error = "Invalid ride code")
             return
         }
@@ -297,11 +314,14 @@ object GroupRide {
         _state.value = State()
     }
 
+    /**
+     * Announce ourselves to the channel. This doubles as presence and as position: a rider
+     * with location sharing off still broadcasts (with 0/0 coords, which the maps filter
+     * out) so intercom-only meshes can still discover each other.
+     */
     private suspend fun publishPosition(ch: RealtimeChannel, t: LocationTracker) {
         val name = _state.value.riderName.ifBlank { "Rider" }
-        val isLocationActive = _state.value.isLocationActive
-        val loc = if (isLocationActive) t.location.value else null
-        if (!isLocationActive || loc == null) return
+        val loc = if (_state.value.isLocationActive) t.location.value else null
 
         runCatching {
             ch.broadcast(
@@ -309,10 +329,12 @@ object GroupRide {
                 buildJsonObject {
                     put("id", deviceId)
                     put("n", name)
-                    put("lat", loc.latitude)
-                    put("lng", loc.longitude)
-                    put("brg", if (loc.hasBearing()) loc.bearing else 0f)
-                    put("spd", (loc.speed * 3.6f).toInt())
+                    put("b", VehicleStore.activeVehicle().title)
+                    put("lat", loc?.latitude ?: 0.0)
+                    put("lng", loc?.longitude ?: 0.0)
+                    put("brg", if (loc?.hasBearing() == true) loc.bearing else 0f)
+                    put("spd", ((loc?.speed ?: 0f) * 3.6f).toInt())
+                    put("ic", _state.value.isIntercomActive)
                     put("t", System.currentTimeMillis())
                 },
             )
@@ -326,6 +348,7 @@ object GroupRide {
             val peer = Peer(
                 id = id,
                 name = msg["n"]?.jsonPrimitive?.content ?: "Rider",
+                bike = msg["b"]?.jsonPrimitive?.content ?: "",
                 lat = msg["lat"]?.jsonPrimitive?.double ?: return,
                 lng = msg["lng"]?.jsonPrimitive?.double ?: return,
                 bearing = msg["brg"]?.jsonPrimitive?.float ?: 0f,
@@ -333,8 +356,22 @@ object GroupRide {
                 // Local receive time, not sender time — phones' clocks disagree.
                 updatedAtMs = System.currentTimeMillis(),
             )
-            synchronized(peersById) { peersById[id] = peer }
-            IntercomEngine.initiateCallTo(id)
+            val isNew = synchronized(peersById) { peersById.put(id, peer) == null }
+            if (isNew) {
+                // Answer a newcomer's announcement right away instead of making them wait
+                // out our publish interval before we appear in their list.
+                scope.launch { channel?.let { ch -> tracker?.let { t -> publishPosition(ch, t) } } }
+            }
+            val peerHasIntercom = msg["ic"]?.jsonPrimitive?.content?.toBoolean() ?: false
+            if (_state.value.isIntercomActive && peerHasIntercom) {
+                // Only one side of a pair offers, or the two offers collide (glare) and
+                // both peer connections stall in have-local-offer.
+                if (deviceId < id) IntercomEngine.initiateCallTo(id)
+            } else {
+                // They (or we) left the voice mesh but stayed in the ride — drop the
+                // half-open connection so it isn't counted as live. No-op if none exists.
+                IntercomEngine.removePeer(id)
+            }
             pushPeers()
         }.onFailure { DebugLog.w(TAG) { "bad pos payload: ${it.message}" } }
     }

@@ -14,6 +14,7 @@ object NavSettings {
     private const val KEY_BIKE_MARKER = "bike_marker"
     private const val KEY_MAP_THEME = "map_theme"
     private const val KEY_INTERCOM_VOLUME = "intercom_volume"
+    private const val KEY_MESH_CODE = "mesh_code"
 
     /** Map day/night theme. AUTO switches to night at [NIGHT_START_HOUR] and back at [DAY_START_HOUR]. */
     enum class MapTheme { DAY, NIGHT, AUTO }
@@ -34,6 +35,9 @@ object NavSettings {
     private val _intercomVolume = MutableStateFlow(1.0f)
     val intercomVolume = _intercomVolume.asStateFlow()
 
+    private val _meshCode = MutableStateFlow("")
+    val meshCode = _meshCode.asStateFlow()
+
     /** Whether the map should render dark right now, given the current mode + clock. */
     fun nightActive(theme: MapTheme = _mapTheme.value): Boolean = when (theme) {
         MapTheme.DAY -> false
@@ -52,6 +56,7 @@ object NavSettings {
             MapTheme.valueOf(prefs.getString(KEY_MAP_THEME, MapTheme.AUTO.name)!!)
         }.getOrDefault(MapTheme.AUTO)
         _intercomVolume.value = prefs.getFloat(KEY_INTERCOM_VOLUME, 1.0f)
+        _meshCode.value = prefs.getString(KEY_MESH_CODE, "") ?: ""
     }
 
     fun setCustomTrailsEnabled(context: Context, on: Boolean) {
@@ -77,5 +82,12 @@ object NavSettings {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putFloat(KEY_INTERCOM_VOLUME, vol).apply()
         IntercomEngine.updateIntercomVolume(vol)
+    }
+
+    fun setMeshCode(context: Context, code: String) {
+        val sanitized = code.trim().uppercase().take(6)
+        _meshCode.value = sanitized
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_MESH_CODE, sanitized).apply()
     }
 }

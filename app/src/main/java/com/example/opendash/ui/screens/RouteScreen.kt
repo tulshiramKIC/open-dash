@@ -89,17 +89,8 @@ fun RouteScreen(
     var recenterKey by remember { mutableStateOf(0) }
     // Active-nav camera: false = heading-up follow (driving), true = whole-route overview.
     var navOverview by remember { mutableStateOf(false) }
-    var showGroupRide by remember { mutableStateOf(false) }
-    var showIntercom by remember { mutableStateOf(false) }
+    // Peers still render on this map; the join/leave controls live on Home.
     val groupRideState by com.example.opendash.data.GroupRide.state.collectAsState()
-
-    val intercomMicLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            showIntercom = true
-        }
-    }
 
 
     // Measured height of the route bottom sheet — the floating map controls sit just
@@ -263,7 +254,7 @@ fun RouteScreen(
                 satellite = satellite,
                 night = false,
                 showAttribution = false,
-                markerBearing = if (navFollow) null else dotBearing,
+                markerBearing = dotBearing,
                 // Grey the ridden part of the route while actually navigating.
                 showTravelledGrey = isActiveNavigation,
                 peers = groupRideState.peers,
@@ -433,70 +424,8 @@ fun RouteScreen(
                             }
                         }
                     }
-                    if (com.example.opendash.data.GroupRide.isConfigured) {
-                        Surface(
-                            onClick = { showGroupRide = true },
-                            shape = CircleShape,
-                            color = if (groupRideState.active && groupRideState.isLocationActive) MaterialTheme.colorScheme.primaryContainer
-                                    else MaterialTheme.colorScheme.surface,
-                            shadowElevation = 4.dp,
-                            modifier = Modifier.size(48.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    OpenDashIcons.GroupRide, contentDescription = "Group ride",
-                                    tint = if (groupRideState.active && groupRideState.isLocationActive) MaterialTheme.colorScheme.onPrimaryContainer
-                                           else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(24.dp),
-                                )
-                            }
-                        }
-                        Surface(
-                            onClick = {
-                                if (androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                                    showIntercom = true
-                                } else {
-                                    intercomMicLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-                                }
-                            },
-                            shape = CircleShape,
-                            color = if (groupRideState.active && groupRideState.isIntercomActive) MaterialTheme.colorScheme.primaryContainer
-                                    else MaterialTheme.colorScheme.surface,
-                            shadowElevation = 4.dp,
-                            modifier = Modifier.size(48.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    painter = androidx.compose.ui.res.painterResource(com.example.opendash.R.drawable.ic_intercom),
-                                    contentDescription = "Mesh Intercom",
-                                    tint = if (groupRideState.active && groupRideState.isIntercomActive) MaterialTheme.colorScheme.onPrimaryContainer
-                                           else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(22.dp),
-                                )
-                            }
-                        }
-                    }
+                    // Group ride + intercom entry points live on Home now.
                 }
-            }
-
-            if (showGroupRide) {
-                GroupRideSheet(
-                    riderLat = riderLoc?.latitude,
-                    riderLng = riderLoc?.longitude,
-                    initialCode = null,
-                    onDismiss = {
-                        showGroupRide = false
-                    },
-                )
-            }
-
-            if (showIntercom) {
-                com.example.opendash.ui.components.IntercomSheet(
-                    initialCode = null,
-                    onDismiss = {
-                        showIntercom = false
-                    },
-                )
             }
 
             if (!isActiveNavigation && (!inRoutePreview || searchingForStopIndex >= 0 || isSearchingDestination) && !routeState.isRecordingRoute && !routeState.isPreparingRouteRecording) {
@@ -577,46 +506,7 @@ fun RouteScreen(
 
 
                     }
-                    // ── Saved destinations (non-trail) shown below search bar ──
-                    val displayedSaved = remember(savedList) {
-                        savedList.filter { loc ->
-                            !java.io.File(ctx.filesDir, "trail_${loc.sid}.json").exists()
-                        }
-                    }
-                    if (displayedSaved.isNotEmpty() && routeState.searchQuery.isEmpty() && routeState.searchResults.isEmpty()) {
-                        Spacer(Modifier.height(8.dp))
-                        Surface(
-                            shape = RoundedCornerShape(18.dp),
-                            color = MaterialTheme.colorScheme.surface,
-                            shadowElevation = 4.dp,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Column(Modifier.padding(vertical = 4.dp)) {
-                                displayedSaved.forEach { loc ->
-                                    PlaceRow(
-                                        icon = OpenDashIcons.LocationPin,
-                                        title = loc.name,
-                                        sub = loc.note.ifBlank { "%.4f, %.4f".format(loc.lat, loc.lng) },
-                                        onClick = {
-                                            if (isSearchingDestination || searchingForStopIndex >= 0) {
-                                                val place = com.example.opendash.data.Place(name = loc.name, address = loc.note, lat = loc.lat, lng = loc.lng)
-                                                if (isSearchingDestination) {
-                                                    routeViewModel.chooseSearchResult(place, stopIndex = -1)
-                                                    isSearchingDestination = false
-                                                } else {
-                                                    routeViewModel.chooseSearchResult(place, stopIndex = searchingForStopIndex)
-                                                    searchingForStopIndex = -1
-                                                }
-                                            } else {
-                                                routeViewModel.selectSaved(loc)
-                                            }
-                                        },
-                                        onEdit = { editing = loc },
-                                    )
-                                }
-                            }
-                        }
-                    }
+
                     SuggestionList(routeState.searchResults) {
                         if (isSearchingDestination) {
                             routeViewModel.chooseSearchResult(it, stopIndex = -1)
