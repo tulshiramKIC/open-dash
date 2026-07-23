@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
+import org.webrtc.ExternalAudioProcessingFactory
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -75,6 +76,8 @@ object IntercomEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var appContext: Context? = null
     private var factory: PeerConnectionFactory? = null
+    /** RNNoise capture post-processor; lives as long as [factory] does. */
+    private var rnnoise: RnnoiseProcessor? = null
     private var localAudioSource: AudioSource? = null
     private var localAudioTrack: AudioTrack? = null
 
@@ -207,6 +210,7 @@ object IntercomEngine {
             }
             if (!isMusicPausedByIntercom) {
                 isMusicPausedByIntercom = true
+                cancelMusicFade()   // speech mid-ramp → stop the ramp, restore the level
                 scope.launch(Dispatchers.Main) {
                     com.example.opendash.media.MediaInfoProvider.currentInstance?.pause()
                 }
@@ -228,9 +232,7 @@ object IntercomEngine {
                 val now = System.currentTimeMillis()
                 if (isMusicPausedByIntercom && (now - lastVoiceTime) > 2500L) {
                     isMusicPausedByIntercom = false
-                    launch(Dispatchers.Main) {
-                        com.example.opendash.media.MediaInfoProvider.currentInstance?.play()
-                    }
+                    resumeMusicWithFade()
                 }
                 delay(500L)
             }
@@ -242,9 +244,56 @@ object IntercomEngine {
         voxJob = null
         if (isMusicPausedByIntercom) {
             isMusicPausedByIntercom = false
+            resumeMusicWithFade()
+        }
+    }
+
+    // ── Music fade-in after intercom speech ─────────────────────────────────────
+    private var musicFadeJob: Job? = null
+    /** Media-stream level a ramp is heading for; -1 when no ramp is in flight. */
+    @Volatile private var musicFadeTarget = -1
+
+    private fun cancelMusicFade() {
+        musicFadeJob?.cancel(); musicFadeJob = null
+        // Never leave the stream parked low from an interrupted ramp.
+        if (musicFadeTarget >= 0) {
+            val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            runCatching {
+                am?.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, musicFadeTarget, 0)
+            }
+            musicFadeTarget = -1
+        }
+    }
+
+    /**
+     * Resume the rider's music after intercom speech, ramping STREAM_MUSIC from ~30%
+     * back to where it was over ~1.5 s instead of slamming straight to full volume.
+     * (Another app's internal volume can't be touched, so the stream level is the lever;
+     * [cancelMusicFade] guarantees it's restored even if speech interrupts the ramp.)
+     */
+    private fun resumeMusicWithFade() {
+        cancelMusicFade()
+        val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        val target = runCatching {
+            am?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+        }.getOrNull() ?: -1
+        if (am == null || target <= 1) {
             scope.launch(Dispatchers.Main) {
                 com.example.opendash.media.MediaInfoProvider.currentInstance?.play()
             }
+            return
+        }
+        musicFadeTarget = target
+        musicFadeJob = scope.launch(Dispatchers.Main) {
+            val start = (target * 3 / 10).coerceAtLeast(1)
+            runCatching { am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, start, 0) }
+            com.example.opendash.media.MediaInfoProvider.currentInstance?.play()
+            val stepMs = 1_500L / (target - start)
+            for (v in (start + 1)..target) {
+                delay(stepMs)
+                runCatching { am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, v, 0) }
+            }
+            musicFadeTarget = -1
         }
     }
 
@@ -270,14 +319,25 @@ object IntercomEngine {
                 val adm = org.webrtc.audio.JavaAudioDeviceModule.builder(appContext!!)
                     .setAudioAttributes(audioAttributes)
                     .setUseHardwareAcousticEchoCanceler(true)
-                    .setUseHardwareNoiseSuppressor(true)
+                    // Hardware NS off: RNNoise is the single suppressor — stacking it on
+                    // the OEM DSP's NS causes musical-noise artifacts.
+                    .setUseHardwareNoiseSuppressor(false)
                     .setSamplesReadyCallback { samples ->
                         samples?.data?.let { handleLocalSamples(it) }
                     }
                     .createAudioDeviceModule()
 
+                // RNNoise runs as the APM's capture post-processor — after AEC/AGC, on
+                // fullband 48 kHz float frames, before Opus encoding.
+                rnnoise?.release()
+                val rn = RnnoiseProcessor().also { rnnoise = it }
+                val apmFactory = ExternalAudioProcessingFactory().also {
+                    it.setCapturePostProcessing(rn)
+                }
+
                 factory = PeerConnectionFactory.builder()
                     .setAudioDeviceModule(adm)
+                    .setAudioProcessingFactory(apmFactory)
                     .setVideoEncoderFactory(DefaultVideoEncoderFactory(rootEglBase.eglBaseContext, true, true))
                     .setVideoDecoderFactory(DefaultVideoDecoderFactory(rootEglBase.eglBaseContext))
                     .createPeerConnectionFactory()
@@ -303,6 +363,8 @@ object IntercomEngine {
             activeAudioTracks.clear()
             factory?.dispose()
             factory = null
+            rnnoise?.release()
+            rnnoise = null
         }
         if (appContext != null) init(appContext!!)
         val fac = factory ?: run {
@@ -317,8 +379,10 @@ object IntercomEngine {
                 mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
                 mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl2", "true"))
                 mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
-                mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
-                mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "true"))
+                // WebRTC's spectral NS off — RNNoise (capture post-processor) is the
+                // single noise suppressor; two suppressors stacked = artifacts.
+                mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "false"))
+                mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "false"))
                 mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
             }
             localAudioSource = fac.createAudioSource(audioConstraints)

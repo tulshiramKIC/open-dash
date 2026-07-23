@@ -42,6 +42,15 @@ android {
         }
     }
 
+    // RNNoise (intercom noise suppression) is built from vendored C sources.
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.opendash.app"
         minSdk = 24
@@ -155,7 +164,7 @@ dependencies {
     // Group Ride: Supabase Realtime broadcast channels (live rider positions, serverless).
     implementation(platform("io.github.jan-tennert.supabase:bom:3.2.2"))
     implementation("io.github.jan-tennert.supabase:realtime-kt")
-    implementation("io.getstream:stream-webrtc-android:1.3.0")
+    implementation("io.getstream:stream-webrtc-android:1.3.10")
     implementation("io.ktor:ktor-client-okhttp:3.2.3")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)

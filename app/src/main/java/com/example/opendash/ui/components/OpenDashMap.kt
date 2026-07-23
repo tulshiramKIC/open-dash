@@ -44,6 +44,38 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import androidx.compose.runtime.State
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** Device compass azimuth (degrees from north), from the rotation-vector sensor.
  *  Quantized to 5° steps so consumers don't re-render on every sensor tick. Used to spin
@@ -188,6 +220,9 @@ fun OpenDashMap(
     riderIconScale: Float = 1f,
     /** Place the rider low in the viewport so more map ahead is visible (nav follow mode). */
     cameraAheadOffset: Boolean = false,
+    /** Extra bottom camera inset (dp) — lifts the rider marker above bottom overlays
+     *  (e.g. the follow card) so it isn't hidden behind them. */
+    cameraBottomPadDp: Float = 0f,
     /** Camera tilt (degrees) in nav follow mode — Google's 3D driving view. 0 = flat top-down. */
     navTiltDeg: Double = 0.0,
     /** On-map maneuver callout at the next turn (Google-style white label + arrow). */
@@ -206,6 +241,14 @@ fun OpenDashMap(
     isCustomTrail: Boolean = false,
     trailStart: Pair<Double, Double>? = null,
     showTravelledGrey: Boolean = false,
+    /** Off-screen group-ride peers get an edge-of-screen chip pointing toward them. */
+    showPeerEdgeMarkers: Boolean = true,
+    /** "Chase a biker": a secondary route to a peer, drawn in a distinct colour. */
+    chaseRoute: List<GeoPoint> = emptyList(),
+    /** Peer currently being chased — highlights their chip and shows the banner. */
+    chasedPeerId: String? = null,
+    /** Tap a peer chip/pin → start/stop chasing them. */
+    onSelectPeer: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     remember { MapLibre.getInstance(context) }
@@ -213,16 +256,28 @@ fun OpenDashMap(
 
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var lineMgr by remember { mutableStateOf<LineManager?>(null) }
+    // Dedicated line layers below / above the main route for the chase line (see style setup).
+    var chaseBelowMgr by remember { mutableStateOf<LineManager?>(null) }
+    var chaseAboveMgr by remember { mutableStateOf<LineManager?>(null) }
     // symbolMgr = MAP-aligned (rider marker rotates with the map to show heading).
     // labelMgr  = VIEWPORT-aligned (text callouts stay upright regardless of map rotation).
     var symbolMgr by remember { mutableStateOf<SymbolManager?>(null) }
     var labelMgr by remember { mutableStateOf<SymbolManager?>(null) }
     var styleReady by remember { mutableStateOf(false) }
     var destroyed by remember { mutableStateOf(false) }
+    // Bumped on every camera move/idle so the off-screen-peer edge overlay recomputes.
+    // Kept as a State (not read here) so only the overlay recomposes per camera frame,
+    // never the whole map.
+    val camTick = remember { mutableStateOf(0) }
+    // Latest peer-select callback, read live by the one-time map-click listener.
+    val onSelectPeerState = androidx.compose.runtime.rememberUpdatedState(onSelectPeer)
 
     // Latest routes + select callback, read live by the one-time map-click listener.
     val routesRef = remember { mutableStateOf<List<List<GeoPoint>>>(emptyList()) }
     routesRef.value = allRoutes
+    // Latest peers, read live by the one-time map-click listener for pin hit-testing.
+    val peersRef = remember { mutableStateOf(peers) }
+    peersRef.value = peers
     val selectCb = androidx.compose.runtime.rememberUpdatedState(onSelectRoute)
     val selectedRef = androidx.compose.runtime.rememberUpdatedState(selectedRouteIndex)
     // Duration bubbles (symbol → route index), repositioned on every camera idle so the
@@ -231,6 +286,7 @@ fun OpenDashMap(
 
     // Remembered lists of active map elements to prevent laggy full redraws
     val routeLines = remember { mutableListOf<org.maplibre.android.plugins.annotation.Line>() }
+    val chaseLines = remember { mutableListOf<org.maplibre.android.plugins.annotation.Line>() }
     val staticSymbols = remember { mutableListOf<org.maplibre.android.plugins.annotation.Symbol>() }
     val dynamicSymbols = remember { mutableListOf<org.maplibre.android.plugins.annotation.Symbol>() }
 
@@ -280,6 +336,23 @@ fun OpenDashMap(
             }
             // Tap a route line or duration bubble on the map to select it (Google-style).
             m.addOnMapClickListener { point ->
+                // Tapping a peer's bike pin follows them (same as tapping their edge chip).
+                val tapPx = m.projection.toScreenLocation(point)
+                val hitDensity = context.resources.displayMetrics.density
+                val nearest = peersRef.value
+                    .filter { it.lat != 0.0 || it.lng != 0.0 }
+                    .minByOrNull {
+                        val sp = m.projection.toScreenLocation(LatLng(it.lat, it.lng))
+                        Math.hypot((sp.x - tapPx.x).toDouble(), (sp.y - tapPx.y).toDouble())
+                    }
+                if (nearest != null) {
+                    val sp = m.projection.toScreenLocation(LatLng(nearest.lat, nearest.lng))
+                    val d = Math.hypot((sp.x - tapPx.x).toDouble(), (sp.y - tapPx.y).toDouble())
+                    if (d < 44.0 * hitDensity) {
+                        onSelectPeerState.value(nearest.id)
+                        return@addOnMapClickListener true
+                    }
+                }
                 val routes = routesRef.value
                 if (routes.size <= 1) return@addOnMapClickListener false
                 val tapScreen = m.projection.toScreenLocation(point)
@@ -354,6 +427,9 @@ fun OpenDashMap(
                     runCatching { lbl.update(sym) }
                 }
             }
+            // Drive the off-screen-peer edge overlay: recompute as the camera pans/zooms.
+            m.addOnCameraMoveListener { camTick.value++ }
+            m.addOnCameraIdleListener { camTick.value++ }
             map = m
         }
     }
@@ -363,10 +439,25 @@ fun OpenDashMap(
     LaunchedEffect(map, satellite, night) {
         val m = map ?: return@LaunchedEffect
         styleReady = false
+        // The annotation plugin re-adds each manager's annotations onto every newly
+        // loaded style, so onDestroy() alone leaves the old peers/markers/route behind
+        // and the fresh render stacks another copy on top — the "+1 every satellite
+        // toggle" duplication. Empty the managers first, THEN destroy them, THEN drop the
+        // now-stale Symbol/Line references so the render effects repopulate cleanly.
+        runCatching { lineMgr?.deleteAll() }
+        runCatching { chaseBelowMgr?.deleteAll() }
+        runCatching { chaseAboveMgr?.deleteAll() }
+        runCatching { symbolMgr?.deleteAll() }
+        runCatching { labelMgr?.deleteAll() }
         runCatching { lineMgr?.onDestroy() }
+        runCatching { chaseBelowMgr?.onDestroy() }
+        runCatching { chaseAboveMgr?.onDestroy() }
         runCatching { symbolMgr?.onDestroy() }
         runCatching { labelMgr?.onDestroy() }
         lineMgr = null; symbolMgr = null; labelMgr = null
+        chaseBelowMgr = null; chaseAboveMgr = null
+        dynamicSymbols.clear(); staticSymbols.clear(); routeLines.clear(); chaseLines.clear()
+        bubbleSyms.value = emptyList()
         m.setStyle(Style.Builder().fromUri(if (night) NIGHT_STYLE_URL else STYLE_URL)) { style ->
             if (destroyed) return@setStyle
             if (satellite) addSatelliteImagery(style)
@@ -380,8 +471,19 @@ fun OpenDashMap(
             style.addImage(DEST_ICON, destPinBitmap())
             style.addImage(STOP_ICON, stopPinBitmap())
             style.addImage(TRAIL_START_ICON, trailStartPinBitmap())
+            // The plugin (v3.0.2) has no per-line sort key, so cross-line z-order is fixed
+            // by manager creation order. Three line layers, bottom→top: chase-below, the
+            // main route, chase-above. The chase route is drawn into whichever matches
+            // "shorter route on top", giving a deterministic result regardless of which
+            // effect last redrew.
+            chaseBelowMgr = LineManager(mapView, m, style).apply {
+                lineCap = org.maplibre.android.style.layers.Property.LINE_CAP_ROUND
+            }
             lineMgr = LineManager(mapView, m, style).apply {
                 // Round ends so congestion segment runs join seamlessly at their seams.
+                lineCap = org.maplibre.android.style.layers.Property.LINE_CAP_ROUND
+            }
+            chaseAboveMgr = LineManager(mapView, m, style).apply {
                 lineCap = org.maplibre.android.style.layers.Property.LINE_CAP_ROUND
             }
             symbolMgr = SymbolManager(mapView, m, style).apply {
@@ -710,7 +812,7 @@ fun OpenDashMap(
     // Camera control. In fitRoute (preview) mode, moves are one-shot per target — the
     // rider dot updates every GPS fix and continuously re-centering would fight panning.
     var camKey by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(styleReady, riderLat, riderLng, riderBearing, navMode, fitRoute, routePoints.size, dest, zoom, followMode) {
+    LaunchedEffect(styleReady, riderLat, riderLng, riderBearing, navMode, fitRoute, routePoints.size, dest, zoom, followMode, cameraBottomPadDp) {
         if (destroyed) return@LaunchedEffect
         val m = map ?: return@LaunchedEffect
         if (!styleReady) return@LaunchedEffect
@@ -765,12 +867,13 @@ fun OpenDashMap(
                 val target = LatLng(riderLat, riderLng)
                 val z = zoom ?: if (navMode) NAV_ZOOM else FOLLOW_ZOOM
                 val topPad = if (cameraAheadOffset) mapView.height * 0.55 else 0.0
+                val botPad = (cameraBottomPadDp * context.resources.displayMetrics.density).toDouble()
                 val pos = if (navMode)
                     CameraPosition.Builder().target(target).zoom(z).tilt(navTiltDeg).bearing(riderBearing.toDouble())
-                        .padding(0.0, topPad, 0.0, 0.0).build()
+                        .padding(0.0, topPad, 0.0, botPad).build()
                 else
                     CameraPosition.Builder().target(target).zoom(z).tilt(0.0).bearing(0.0)
-                        .padding(0.0, topPad, 0.0, 0.0).build()
+                        .padding(0.0, topPad, 0.0, botPad).build()
                 runCatching { m.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 600) }
             }
             riderLat != null && riderLng != null -> {
@@ -802,13 +905,14 @@ fun OpenDashMap(
         val target = LatLng(lat, lng)
         val z = zoom ?: if (navMode) NAV_ZOOM else FOLLOW_ZOOM
         val topPad = if (cameraAheadOffset) mapView.height * 0.55 else 0.0
+        val botPad = (cameraBottomPadDp * context.resources.displayMetrics.density).toDouble()
         val position = if (navMode) {
             CameraPosition.Builder()
                 .target(target)
                 .zoom(z)
                 .tilt(navTiltDeg)
                 .bearing(riderBearing.toDouble())
-                .padding(0.0, topPad, 0.0, 0.0)
+                .padding(0.0, topPad, 0.0, botPad)
                 .build()
         } else {
             CameraPosition.Builder()
@@ -816,13 +920,219 @@ fun OpenDashMap(
                 .zoom(z)
                 .tilt(0.0)
                 .bearing(0.0)
-                .padding(0.0, topPad, 0.0, 0.0)
+                .padding(0.0, topPad, 0.0, botPad)
                 .build()
         }
         runCatching { m.animateCamera(CameraUpdateFactory.newCameraPosition(position), 500) }
     }
 
-    AndroidView(factory = { mapView }, modifier = modifier)
+    // Draw the chase route (route to a moving biker) as its own amber line. Whichever
+    // route is SHORTER renders on top: the chase goes into the above-layer when it's the
+    // shorter path, else the below-layer, so the main route sits on top. It never touches
+    // the main route's own line, so primary navigation is undisturbed either way.
+    LaunchedEffect(styleReady, chaseRoute, routePoints) {
+        if (destroyed) return@LaunchedEffect
+        val above = chaseAboveMgr ?: return@LaunchedEffect
+        val below = chaseBelowMgr ?: return@LaunchedEffect
+        runCatching { above.delete(chaseLines.toList()) }
+        runCatching { below.delete(chaseLines.toList()) }
+        chaseLines.clear()
+        if (chaseRoute.size >= 2) {
+            val chaseLen = geomLengthM(chaseRoute)
+            val mainLen = if (routePoints.size >= 2) geomLengthM(routePoints) else Double.MAX_VALUE
+            val target = if (chaseLen <= mainLen) above else below
+            chaseLines += target.create(
+                LineOptions()
+                    .withLatLngs(chaseRoute.map { LatLng(it.lat, it.lng) })
+                    .withLineColor("#FF6D00")   // amber — distinct from the blue main route
+                    .withLineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND)
+                    .withLineWidth(5.0f),
+            )
+        }
+    }
+
+    Box(modifier) {
+        AndroidView(factory = { mapView }, modifier = Modifier.matchParentSize())
+        if (showPeerEdgeMarkers && styleReady) {
+            PeerEdgeOverlay(
+                peers = peers,
+                map = map,
+                riderLat = riderLat,
+                riderLng = riderLng,
+                camTick = camTick,
+                followedId = chasedPeerId,
+                onTapPeer = { id -> onSelectPeerState.value(id) },
+            )   // camTick is a State; only the overlay reads .value → localized recompose
+        }
+    }
+}
+
+/**
+ * Off-screen group-ride peers, pinned to the screen edge pointing toward their real
+ * position (Google-Maps-style / game off-screen markers). A peer inside the current
+ * viewport is left to its normal MapLibre pin and gets no chip here; as you zoom out and
+ * it enters the view, the chip disappears and the map pin takes over. Direction uses the
+ * geographic bearing from the camera centre (minus map rotation), so it stays correct
+ * when the map is rotated or tilted.
+ */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.PeerEdgeOverlay(
+    peers: List<com.example.opendash.data.GroupRide.Peer>,
+    map: MapLibreMap?,
+    riderLat: Double?,
+    riderLng: Double?,
+    camTick: State<Int>,
+    followedId: String?,
+    onTapPeer: (String) -> Unit,
+) {
+    val m = map ?: return
+    val density = LocalDensity.current
+    val chipPx = with(density) { 32.dp.toPx() }
+    val edgeInset = with(density) { 6.dp.toPx() } + chipPx / 2f
+    var sizePx by remember { mutableStateOf(IntSize.Zero) }
+
+    Box(Modifier.matchParentSize().onSizeChanged { sizePx = it }) {
+        val w = sizePx.width.toFloat()
+        val h = sizePx.height.toFloat()
+        if (w < 1f || h < 1f) return@Box
+
+        val markers = remember(camTick.value, peers, sizePx, riderLat, riderLng) {
+            computeEdgeMarkers(m, peers, w, h, edgeInset, riderLat, riderLng)
+        }
+        markers.forEach { em ->
+            val chipDp = with(density) { chipPx.toDp() }
+            Box(
+                Modifier
+                    .offset {
+                        IntOffset(
+                            (em.x - chipPx / 2f).roundToInt(),
+                            (em.y - chipPx / 2f).roundToInt(),
+                        )
+                    }
+                    .size(chipDp)
+                    .clickable { onTapPeer(em.id) }
+                    // Directional triangle on the outer side, pointing the way to the peer.
+                    .drawBehind {
+                        val r = size.minDimension / 2f
+                        val dirX = sin(em.angleRad)
+                        val dirY = -cos(em.angleRad)
+                        val tip = Offset(center.x + dirX * r, center.y + dirY * r)
+                        val baseC = Offset(center.x + dirX * (r * 0.55f), center.y + dirY * (r * 0.55f))
+                        // Perpendicular for the triangle base.
+                        val px = -dirY; val py = dirX
+                        val half = r * 0.42f
+                        val p = androidx.compose.ui.graphics.Path().apply {
+                            moveTo(tip.x, tip.y)
+                            lineTo(baseC.x + px * half, baseC.y + py * half)
+                            lineTo(baseC.x - px * half, baseC.y - py * half)
+                            close()
+                        }
+                        drawPath(p, Color(em.color))
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                // White ring around every chip; the followed one gets a fatter ring.
+                val ringWidth = if (em.id == followedId) 3.dp else 2.dp
+                Box(
+                    Modifier
+                        .size(chipDp * 0.78f)
+                        .clip(CircleShape)
+                        .background(Color(em.color))
+                        .border(BorderStroke(ringWidth, Color.White), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (em.bike.isNotBlank()) {
+                        // Same bike avatar as the map pin; the coloured ring stays around it.
+                        Image(
+                            painter = painterResource(
+                                com.example.opendash.ui.screens.getBikeDefaultDrawable(em.bike)
+                            ),
+                            contentDescription = em.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.matchParentSize().clip(CircleShape),
+                        )
+                    } else {
+                        Text(
+                            em.name.trim().take(1).uppercase().ifBlank { "?" },
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class EdgeMarker(
+    val id: String,
+    val name: String,
+    val bike: String,
+    val color: Int,
+    val x: Float,
+    val y: Float,
+    /** Screen-space angle to the peer (0 = up), radians; drives the pointer + edge clamp. */
+    val angleRad: Float,
+)
+
+private fun computeEdgeMarkers(
+    m: MapLibreMap,
+    peers: List<com.example.opendash.data.GroupRide.Peer>,
+    w: Float,
+    h: Float,
+    edgeInset: Float,
+    riderLat: Double?,
+    riderLng: Double?,
+): List<EdgeMarker> {
+    val bounds = runCatching { m.projection.visibleRegion.latLngBounds }.getOrNull()
+    val center = runCatching { m.cameraPosition.target }.getOrNull() ?: return emptyList()
+    val mapBearing = runCatching { m.cameraPosition.bearing }.getOrDefault(0.0)
+    val cx = w / 2f
+    val cy = h / 2f
+    val out = ArrayList<EdgeMarker>(peers.size)
+    peers.forEach { p ->
+        if (p.lat == 0.0 && p.lng == 0.0) return@forEach
+        val ll = LatLng(p.lat, p.lng)
+        // On-screen peers keep their normal map pin — no edge chip.
+        if (bounds?.contains(ll) == true) return@forEach
+        val brg = bearingDeg(center.latitude, center.longitude, p.lat, p.lng) - mapBearing
+        val rad = Math.toRadians(brg).toFloat()
+        val dirX = sin(rad)
+        val dirY = -cos(rad)
+        // Clamp onto the inset edge rectangle along the direction vector.
+        val sx = if (abs(dirX) > 1e-4f) (cx - edgeInset) / abs(dirX) else Float.MAX_VALUE
+        val sy = if (abs(dirY) > 1e-4f) (cy - edgeInset) / abs(dirY) else Float.MAX_VALUE
+        val s = minOf(sx, sy)
+        val colorIdx = Math.abs(p.id.hashCode()) % PEER_COLORS.size
+        out += EdgeMarker(
+            id = p.id,
+            name = p.name,
+            bike = p.bike,
+            color = if (p.isStale) 0xFF9AA0A6.toInt() else PEER_COLORS[colorIdx],
+            x = cx + dirX * s,
+            y = cy + dirY * s,
+            angleRad = rad,
+        )
+    }
+    return out
+}
+
+/** Total ground length of a polyline in metres. */
+private fun geomLengthM(pts: List<GeoPoint>): Double {
+    var sum = 0.0
+    for (i in 1 until pts.size) sum += GeoPoint.distMeters(pts[i - 1], pts[i])
+    return sum
+}
+
+/** Initial compass bearing from (lat1,lon1) to (lat2,lon2), degrees clockwise from north. */
+private fun bearingDeg(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val dLon = Math.toRadians(lon2 - lon1)
+    val la1 = Math.toRadians(lat1)
+    val la2 = Math.toRadians(lat2)
+    val y = sin(dLon) * cos(la2)
+    val x = cos(la1) * sin(la2) - sin(la1) * cos(la2) * cos(dLon)
+    return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
 }
 
 /**

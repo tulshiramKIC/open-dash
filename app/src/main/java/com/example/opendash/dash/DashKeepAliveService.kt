@@ -31,6 +31,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -105,8 +106,25 @@ class DashKeepAliveService : Service() {
         const val ACTION_TOGGLE_THEME = "com.example.opendash.ACTION_TOGGLE_THEME"
     }
 
+    /** Everything the notification visibly depends on — used to skip identical rebuilds. */
+    private data class NotifKey(
+        val stage: ConnStage?,
+        val hasRoute: Boolean,
+        val etaMinutes: Int?,
+        /** Remaining distance in 100 m steps — refreshes "km left" without 1 Hz re-notify spam. */
+        val remainingHm: Int?,
+        val destinationName: String?,
+        val intercomActive: Boolean,
+        val micMuted: Boolean,
+        val voice: VoiceMode,
+        val theme: NavSettings.MapTheme,
+    )
+
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+
+    /** Wall-clock start of the current navigation, for the trip-progress bar. */
+    private var navStartMs = 0L
 
     /**
      * MediaStyle only gets the lock-screen treatment — controls visible without unlocking
@@ -200,9 +218,13 @@ class DashKeepAliveService : Service() {
             // Without the MICROPHONE type, Android 11+ background-restricts the mic the moment
             // OpenDash leaves the foreground (another app opens, screen locks) — capture is
             // muted and WebRTC's shared audio unit tears down playout with it, killing the
-            // intercom both ways. Only add it during a ride and with RECORD_AUDIO actually
-            // granted; declaring it without the runtime grant is a fatal SecurityException.
-            if (hasMicPermission() && REASON_RIDE in reasons) {
+            // intercom both ways. Only add it when the intercom is actually running and with
+            // RECORD_AUDIO granted; declaring it without the runtime grant is a fatal
+            // SecurityException, and declaring it for a location-only group ride makes
+            // Android attribute mic usage to a session that never opens the mic.
+            if (hasMicPermission() && REASON_RIDE in reasons &&
+                IntercomEngine.state.value.isIntercomActive
+            ) {
                 fgsType = fgsType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             }
             startForeground(NOTIF_ID, buildNotification(), fgsType)
@@ -225,6 +247,8 @@ class DashKeepAliveService : Service() {
 
     private fun acquireLocks() {
         if (wakeLock != null) return   // re-entrant ACTION_START (notification refresh)
+        // A live ride context arms crash detection (only if its Settings toggle is on).
+        com.example.opendash.data.CrashDetector.enterRideContext(this)
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "opendash:dash").apply {
             setReferenceCounted(false)
@@ -244,6 +268,7 @@ class DashKeepAliveService : Service() {
     }
 
     private fun releaseLocks() {
+        if (wakeLock != null) com.example.opendash.data.CrashDetector.exitRideContext()
         runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
         runCatching { if (wifiLock?.isHeld == true) wifiLock?.release() }
         wakeLock = null
@@ -257,6 +282,11 @@ class DashKeepAliveService : Service() {
             setCallback(object : android.media.session.MediaSession.Callback() {
                 override fun onCustomAction(action: String, extras: android.os.Bundle?) {
                     dispatchToggle(action)
+                }
+                // Trip progress isn't scrubbable — snap the thumb back to reality.
+                override fun onSeekTo(pos: Long) {
+                    getSystemService(NotificationManager::class.java)
+                        .notify(NOTIF_ID, buildNotification())
                 }
                 // A rider's headset/handlebar buttons should still drive their music, not
                 // get swallowed by our session just because it's the most recent one.
@@ -298,10 +328,25 @@ class DashKeepAliveService : Service() {
                 NavSettings.mapTheme
             ) { uiState, intercom, voice, theme ->
                 lastUiState = uiState
-                buildNotification(uiState, intercom, voice, theme)
-            }.collect { notification ->
+                // Rebuild only when something the notification actually shows changes —
+                // the ui flow ticks at GPS rate during navigation, and re-notifying at
+                // 1 Hz for identical content is pure battery waste. The trip progress
+                // bar doesn't need pushes either: the media session position advances
+                // on its own clock between updates.
+                NotifKey(
+                    stage = uiState?.stage,
+                    hasRoute = uiState?.hasRoute == true,
+                    etaMinutes = uiState?.etaMinutes,
+                    remainingHm = uiState?.remainingKm?.let { (it * 10).toInt() },
+                    destinationName = uiState?.destinationName,
+                    intercomActive = intercom.isIntercomActive,
+                    micMuted = intercom.isMuted,
+                    voice = voice,
+                    theme = theme,
+                )
+            }.distinctUntilChanged().collect {
                 val nm = getSystemService(NotificationManager::class.java)
-                nm.notify(NOTIF_ID, notification)
+                nm.notify(NOTIF_ID, buildNotification())
             }
         }
     }
@@ -387,19 +432,30 @@ class DashKeepAliveService : Service() {
                 else -> "🏍 OpenDash"
             }
             REASON_TRAIL in reasons -> "OpenDash — recording trail"
-            else -> "OpenDash Intercom"
+            // A ride session is only "Intercom" when the voice mesh is actually on;
+            // location-only group rides say what they really do.
+            else -> if (intercom.isIntercomActive) "OpenDash Intercom" else "OpenDash — Group Ride"
         }
 
         // Only say something when there's something to say. The old blurb ("Sharing your
         // live location with the ride") was noise on every intercom session.
         val text = StringBuilder()
         if (uiState != null && uiState.hasRoute && uiState.etaMinutes != null) {
-            text.append("ETA: ${uiState.etaMinutes}m")
-            if (uiState.destinationName != null) {
-                text.append(" to ${uiState.destinationName}")
+            // Arrival clock time (respects the phone's 12/24 h setting) + distance left —
+            // the two numbers a rider actually wants at a glance.
+            val arrival = android.text.format.DateFormat.getTimeFormat(this)
+                .format(java.util.Date(System.currentTimeMillis() + uiState.etaMinutes * 60_000L))
+            text.append("Arriving $arrival")
+            uiState.remainingKm?.let { km ->
+                text.append(" · ")
+                text.append(if (km >= 10) "${km.toInt()} km" else "%.1f km".format(km))
+                text.append(" left")
             }
+            uiState.destinationName?.let { text.append(" · $it") }
         } else if (REASON_DASH in reasons || REASON_TRAIL in reasons) {
             text.append(notificationContent().second)
+        } else if (REASON_RIDE in reasons && !intercom.isIntercomActive) {
+            text.append("Sharing your live location with the ride.")
         }
 
         val micLabel = if (!intercom.isIntercomActive) {
@@ -453,58 +509,90 @@ class DashKeepAliveService : Service() {
             PendingIntent.getBroadcast(this, 3, Intent(ACTION_TOGGLE_THEME).setPackage(packageName), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         ).build()
 
+        // The MediaStyle seek bar can't be removed, so make it earn its place: during
+        // navigation it shows trip progress — position = time riding, duration = time
+        // riding + live ETA, so the bar visibly fills as arrival approaches and the
+        // labels read as elapsed / total trip time. STATE_PLAYING at speed 1 makes the
+        // system advance the position on its own clock, no per-second re-notify needed.
+        // Without a route there's no duration and the bar collapses.
+        val navigating = uiState != null && uiState.hasRoute && uiState.etaMinutes != null
+        if (navigating) {
+            if (navStartMs == 0L) navStartMs = System.currentTimeMillis()
+        } else {
+            navStartMs = 0L
+        }
+        val elapsedMs = if (navigating) System.currentTimeMillis() - navStartMs else 0L
+
         // The lock-screen media UI takes its labels from the session metadata, not the
         // notification's title/text, and builds its buttons from the PlaybackState —
         // notification actions are ignored there. Declaring only custom actions (no
         // PLAY_PAUSE/SKIP) is what puts our controls in those slots instead of generic
         // music transport buttons.
-        mediaSession?.setMetadata(
-            android.media.MediaMetadata.Builder()
-                .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, title)
-                .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, text.toString())
-                .putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, notificationArt)
-                .build()
-        )
-        mediaSession?.setPlaybackState(
-            android.media.session.PlaybackState.Builder()
-                .setState(
-                    android.media.session.PlaybackState.STATE_PLAYING,
-                    android.media.session.PlaybackState.PLAYBACK_POSITION_UNKNOWN,
-                    1f,
-                )
-                .addCustomAction(
-                    android.media.session.PlaybackState.CustomAction
-                        .Builder(ACTION_TOGGLE_MIC, micLabel, micIcon).build()
-                )
-                .addCustomAction(
-                    android.media.session.PlaybackState.CustomAction
-                        .Builder(ACTION_TOGGLE_VOICE, voiceLabel, voiceIcon).build()
-                )
-                .addCustomAction(
-                    android.media.session.PlaybackState.CustomAction
-                        .Builder(ACTION_TOGGLE_THEME, themeLabel, themeIcon).build()
-                )
-                .build()
-        )
+        val metadata = android.media.MediaMetadata.Builder()
+            .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, title)
+            .putString(android.media.MediaMetadata.METADATA_KEY_ARTIST, text.toString())
+            .putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, notificationArt)
+        if (navigating) {
+            metadata.putLong(
+                android.media.MediaMetadata.METADATA_KEY_DURATION,
+                elapsedMs + uiState!!.etaMinutes!! * 60_000L,
+            )
+        }
+        mediaSession?.setMetadata(metadata.build())
+        // The mic control only exists while the voice mesh is on — showing it on a
+        // location-only group ride made the whole session read as an intercom.
+        val playbackBuilder = android.media.session.PlaybackState.Builder()
+            .setState(
+                android.media.session.PlaybackState.STATE_PLAYING,
+                if (navigating) elapsedMs
+                else android.media.session.PlaybackState.PLAYBACK_POSITION_UNKNOWN,
+                1f,
+            )
+        if (navigating) {
+            // OEM media UIs (ColorOS included) only draw the progress row when the
+            // session declares SEEK_TO — without it the duration/position fields render
+            // blank even with valid metadata. Seeks themselves are ignored (onSeekTo
+            // no-op): the bar is trip progress, not a scrubber.
+            playbackBuilder.setActions(android.media.session.PlaybackState.ACTION_SEEK_TO)
+        }
+        if (intercom.isIntercomActive) {
+            playbackBuilder.addCustomAction(
+                android.media.session.PlaybackState.CustomAction
+                    .Builder(ACTION_TOGGLE_MIC, micLabel, micIcon).build()
+            )
+        }
+        playbackBuilder
+            .addCustomAction(
+                android.media.session.PlaybackState.CustomAction
+                    .Builder(ACTION_TOGGLE_VOICE, voiceLabel, voiceIcon).build()
+            )
+            .addCustomAction(
+                android.media.session.PlaybackState.CustomAction
+                    .Builder(ACTION_TOGGLE_THEME, themeLabel, themeIcon).build()
+            )
+        mediaSession?.setPlaybackState(playbackBuilder.build())
 
+        val actions = buildList {
+            if (intercom.isIntercomActive) add(micAction)
+            add(voiceAction)
+            add(themeAction)
+        }
         val style = Notification.MediaStyle()
-            .setShowActionsInCompactView(0, 1, 2)
+            .setShowActionsInCompactView(*actions.indices.toList().toIntArray())
             .also { s -> mediaSession?.sessionToken?.let { s.setMediaSession(it) } }
         builder.setStyle(style)
         builder.setContentTitle(title)
         if (text.isNotBlank()) builder.setContentText(text)
         notificationArt?.let { builder.setLargeIcon(it) }
 
-        return builder
+        builder
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(open)
             .setOnlyAlertOnce(true)
             .setPriority(Notification.PRIORITY_DEFAULT)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .addAction(micAction)
-            .addAction(voiceAction)
-            .addAction(themeAction)
-            .build()
+        actions.forEach { builder.addAction(it) }
+        return builder.build()
     }
 }

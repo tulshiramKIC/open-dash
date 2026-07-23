@@ -117,8 +117,15 @@ fun SettingsScreen(
     val themeMode by OpenDashThemeController.mode.collectAsState()
     val dynamicColor by OpenDashThemeController.dynamic.collectAsState()
     val customTrailsEnabled by NavSettings.customTrailsEnabled.collectAsState()
+    val chaseRiderEnabled by NavSettings.chaseRiderEnabled.collectAsState()
     val meshCode by NavSettings.meshCode.collectAsState()
     var meshCodeField by remember(meshCode) { mutableStateOf(meshCode) }
+    val crashSosEnabled by NavSettings.crashSosEnabled.collectAsState()
+    val sosContact by NavSettings.sosContact.collectAsState()
+    var sosContactField by remember(sosContact) { mutableStateOf(sosContact) }
+    val smsPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) NavSettings.setCrashSosEnabled(ctx, true) }
     remember(ctx) {
         CurrencySettings.init(ctx)
         NavSettings.init(ctx)
@@ -289,8 +296,21 @@ fun SettingsScreen(
                         onCheckedChange = { NavSettings.setCustomTrailsEnabled(ctx, it) },
                     )
                 },
-                last = true,
                 showBubbleBg = false,
+            )
+            SettingsDivider(Modifier.padding(horizontal = 6.dp))
+            SettingRow(
+                icon = OpenDashIcons.GroupRide,
+                title = "Navigate to Riders",
+                sub = "Tap a rider to route to them (updates as they move). " +
+                    "Off to avoid any routing-API usage.",
+                control = {
+                    androidx.compose.material3.Switch(
+                        checked = chaseRiderEnabled,
+                        onCheckedChange = { NavSettings.setChaseRiderEnabled(ctx, it) },
+                    )
+                },
+                last = true,
             )
         }
 
@@ -342,6 +362,65 @@ fun SettingsScreen(
                 size = com.example.opendash.ui.components.BtnSize.Sm,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+
+        SectionLabel("Safety")
+        SettingsGroup(padding = 14.dp) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SettingsIconBubble(OpenDashIcons.Target)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Crash Detection & SOS",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 14.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = GeistFamily,
+                    )
+                }
+                androidx.compose.material3.Switch(
+                    checked = crashSosEnabled,
+                    onCheckedChange = { on ->
+                        if (on && androidx.core.content.ContextCompat.checkSelfPermission(
+                                ctx, android.Manifest.permission.SEND_SMS
+                            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                        ) {
+                            // Grant flows back through the launcher, which enables the toggle.
+                            smsPermissionLauncher.launch(android.Manifest.permission.SEND_SMS)
+                        } else {
+                            NavSettings.setCrashSosEnabled(ctx, on)
+                        }
+                    },
+                )
+            }
+            if (crashSosEnabled) {
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = sosContactField,
+                    onValueChange = { raw ->
+                        sosContactField = raw.filter { it.isDigit() || it == '+' }.take(16)
+                    },
+                    label = { Text("Emergency contact number", fontFamily = GeistFamily, fontSize = 12.sp) },
+                    placeholder = { Text("+91XXXXXXXXXX", fontFamily = GeistMonoFamily, fontSize = 14.sp) },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Phone
+                    ),
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontFamily = GeistMonoFamily, fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                com.example.opendash.ui.components.OpenDashBtn(
+                    "Save contact",
+                    onClick = { NavSettings.setSosContact(ctx, sosContactField) },
+                    variant = com.example.opendash.ui.components.BtnVariant.Primary,
+                    size = com.example.opendash.ui.components.BtnSize.Sm,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
 
         SectionLabel("API Keys")

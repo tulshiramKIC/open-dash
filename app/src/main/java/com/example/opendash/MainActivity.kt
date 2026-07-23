@@ -44,9 +44,19 @@ class MainActivity : ComponentActivity() {
             OpenDashTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     AppNavigation(routeViewModel = routeViewModel)
+                    // Crash-SOS countdown renders over everything, whatever screen is up.
+                    com.example.opendash.ui.components.CrashAlertOverlay()
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // A location-only group ride has no foreground service, so Android freezes it in
+        // the background and the Realtime socket dies. Coming back to the app is the
+        // moment to notice and silently rejoin, so the map shows live peers again.
+        com.example.opendash.data.GroupRide.onAppForeground()
     }
 
     override fun onNewIntent(intent: Intent) {

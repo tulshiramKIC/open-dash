@@ -100,6 +100,13 @@ fun RouteScreen(
 
     val dashUi by dashViewModel.ui.collectAsState()
     val isActiveNavigation = routeState.navigating
+    // A tapped rider is a *candidate* to follow (shows a name + Follow prompt); the chase
+    // (and its routing-API polling) only starts when the user taps Follow.
+    var pendingFollowPeerId by remember { mutableStateOf<String?>(null) }
+    val chaseRiderEnabled by com.example.opendash.data.NavSettings.chaseRiderEnabled.collectAsState()
+    // Any chase UI at the bottom (prompt or ETA) — the right-edge controls lift to clear it.
+    val followUiActive = dashUi.chasePeerId != null ||
+        (pendingFollowPeerId != null && dashUi.chasePeerId == null)
 
     var showStartAlert by remember { mutableStateOf(false) }
     var showedStartAlert by rememberSaveable { mutableStateOf(false) }
@@ -219,13 +226,20 @@ fun RouteScreen(
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow)) {
             // ── Full-screen map ──
             // Blue-dot compass beam: follows the phone's orientation while standing still,
-            // hands off to GPS travel bearing once moving (camera never rotates with it).
+            // hands off to GPS travel bearing once moving.
             val deviceAzimuth by rememberDeviceAzimuth()
             val dotBearing =
                 if ((dashUi.speedKmh ?: 0) < 5) deviceAzimuth else dashUi.riderBearing
             // Active navigation drives the camera heading-up and follows the rider (unless the
             // user opened the route overview). Alternates/bubbles are hidden while navigating.
             val navFollow = isActiveNavigation && !navOverview
+            // Google-style heading-up: while navigating the CAMERA rotates with the same
+            // blended bearing the marker uses (compass at stand-still, GPS once moving),
+            // so the map turns and the rider icon always points screen-up. Outside nav —
+            // or with the north-up compass toggle on — the camera stays north-up and
+            // only the beam/icon rotates.
+            val northUpNav by com.example.opendash.data.NavSettings.northUpNav.collectAsState()
+            val cameraBearing = if (navFollow && !northUpNav) dotBearing else 0f
             OpenDashMap(
                 riderLat = riderLoc?.latitude,
                 riderLng = riderLoc?.longitude,
@@ -240,12 +254,14 @@ fun RouteScreen(
                 hasLocationPermission = hasLocation,
                 fitRoute = if (isActiveNavigation) navOverview else !routeState.isRecordingRoute,
                 navMode = navFollow,
-                riderBearing = dashUi.riderBearing,
+                riderBearing = cameraBearing,
                 cameraAheadOffset = navFollow,
                 // Full-screen phone nav: a slightly pulled-back, tilted 3D view like Google
                 // (the dash's own auto-zoom is tuned for the tiny round cluster, too close here).
                 zoom = if (navFollow) 16.5 else null,
-                navTiltDeg = if (navFollow) 50.0 else 0.0,
+                // North-up mode is Google's flat 2D view; the 3D tilt only makes sense
+                // when the map rotates to heading.
+                navTiltDeg = if (navFollow && !northUpNav) 50.0 else 0.0,
                 maneuverPoint = if (navFollow && dashUi.maneuverLat != null && dashUi.maneuverLng != null)
                     dashUi.maneuverLat!! to dashUi.maneuverLng!! else null,
                 maneuverType = dashUi.maneuverType,
@@ -258,6 +274,14 @@ fun RouteScreen(
                 // Grey the ridden part of the route while actually navigating.
                 showTravelledGrey = isActiveNavigation,
                 peers = groupRideState.peers,
+                chaseRoute = dashUi.chaseRoutePoints,
+                // Lift the rider marker above the follow card when both are on-screen.
+                cameraBottomPadDp = if (isActiveNavigation && dashUi.chasePeerId != null) 170f else 0f,
+                chasedPeerId = dashUi.chasePeerId ?: pendingFollowPeerId,
+                onSelectPeer = { id ->
+                    // Show the Follow prompt; don't auto-start the chase (or its API calls).
+                    if (chaseRiderEnabled && dashUi.chasePeerId != id) pendingFollowPeerId = id
+                },
                 modifier = Modifier.fillMaxSize(),
                 recordedPoints = routeState.recordedPoints,
                 stops = routeState.stops.mapNotNull { if (it.lat != null && it.lng != null) com.example.opendash.dash.nav.GeoPoint(it.lat, it.lng) else null },
@@ -341,8 +365,12 @@ fun RouteScreen(
                         distanceM = dashUi.nextTurnM,
                         instruction = dashUi.maneuver,
                         secondManeuverType = dashUi.secondManeuverType,
-                        destinationName = dashUi.destinationName.orEmpty()
+                        destinationName = if (dashUi.chaseGuidanceActive)
+                            (dashUi.chasePeerName?.let { "to $it" } ?: "to rider")
+                        else dashUi.destinationName.orEmpty()
                             .ifBlank { routeState.destination?.name.orEmpty() },
+                        // While guiding the follow (shorter) route, match the amber follow theme.
+                        accent = if (dashUi.chaseGuidanceActive) Color(0xFFFF6D00) else NavGreen,
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .statusBarsPadding()
@@ -355,7 +383,11 @@ fun RouteScreen(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .navigationBarsPadding()
-                            .padding(start = 16.dp, bottom = 96.dp + navBarDp),
+                            // Lift above the chase card while following so it doesn't overlap.
+                            .padding(
+                                start = 16.dp,
+                                bottom = 96.dp + navBarDp + (if (followUiActive) 76.dp else 0.dp),
+                            ),
                     )
 
                     // Bottom ETA sheet: exit (X) · ETA/dist/arrival · route overview toggle.
@@ -376,6 +408,54 @@ fun RouteScreen(
                 }
             }
 
+            // ── Chase-a-biker: Follow prompt, then the time/distance readout ──
+            // Tapping a rider first shows a name + Follow prompt (no routing yet). Once
+            // following: while actively navigating a compact amber card floats ABOVE the
+            // real nav sheet (both visible); otherwise it reuses the same NavBottomSheet
+            // component, amber-accented, driven by the chase route. During active nav the
+            // card floats above the main sheet (bottom 96dp); otherwise it sits at bottom.
+            val chaseFloatModifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp)
+                .padding(bottom = if (isActiveNavigation) 96.dp else 12.dp)
+            if (dashUi.chasePeerId == null && pendingFollowPeerId != null) {
+                val name = groupRideState.peers
+                    .firstOrNull { it.id == pendingFollowPeerId }?.name.orEmpty()
+                FollowPromptCard(
+                    name = name,
+                    onFollow = {
+                        pendingFollowPeerId?.let { dashViewModel.startChasePeer(it) }
+                        pendingFollowPeerId = null
+                    },
+                    onDismiss = { pendingFollowPeerId = null },
+                    modifier = chaseFloatModifier,
+                )
+            } else if (dashUi.chasePeerId != null) {
+                if (isActiveNavigation) {
+                    FollowNavCard(
+                        name = dashUi.chasePeerName.orEmpty(),
+                        etaMinutes = dashUi.chaseEtaMinutes,
+                        distanceKm = dashUi.chaseDistanceKm,
+                        onStop = { dashViewModel.stopChasePeer() },
+                        modifier = chaseFloatModifier,
+                    )
+                } else {
+                    NavBottomSheet(
+                        remainingKm = dashUi.chaseDistanceKm,
+                        etaMinutes = dashUi.chaseEtaMinutes,
+                        overview = false,
+                        showOverview = false,
+                        accent = Color(0xFFFF6D00),
+                        title = dashUi.chasePeerName?.let { "Following $it" },
+                        onExit = { dashViewModel.stopChasePeer() },
+                        onToggleOverview = {},
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth(),
+                    )
+                }
+            }
 
             // ── Right-edge floating controls: layers over recenter, above the sheet ──
             if (routeState.searchResults.isEmpty()) {
@@ -386,11 +466,41 @@ fun RouteScreen(
                         .align(Alignment.BottomEnd)
                         .navigationBarsPadding()
                         .padding(end = 16.dp, bottom = when {
+                            // Lift clear of the chase card (~72dp tall at bottom 96) with a
+                            // comfortable gap so the My-Location button is never covered.
+                            isActiveNavigation && followUiActive -> 96.dp + 96.dp
                             isActiveNavigation -> 96.dp
+                            followUiActive -> 120.dp
                             inRoutePreview -> sheetHeight + 16.dp
                             else -> 20.dp
                         }),
                 ) {
+                    // Google-style compass button (nav only): toggles between heading-up
+                    // (map rotates, icon points up) and north-up (fixed map, beam rotates).
+                    // Persisted, so the preferred style survives across rides.
+                    if (isActiveNavigation) {
+                        Surface(
+                            onClick = {
+                                com.example.opendash.data.NavSettings.setNorthUpNav(ctx, !northUpNav)
+                            },
+                            shape = CircleShape,
+                            color = if (northUpNav) MaterialTheme.colorScheme.primaryContainer
+                                    else MaterialTheme.colorScheme.surface,
+                            shadowElevation = 4.dp,
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    OpenDashIcons.Compass,
+                                    contentDescription = if (northUpNav) "North up — tap for heading up"
+                                                         else "Heading up — tap for north up",
+                                    tint = if (northUpNav) MaterialTheme.colorScheme.onPrimaryContainer
+                                           else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp),
+                                )
+                            }
+                        }
+                    }
                     Surface(
                         onClick = { satellite = !satellite },
                         shape = CircleShape,
@@ -1238,11 +1348,13 @@ private fun NavManeuverBanner(
     secondManeuverType: com.example.opendash.dash.nav.ManeuverType?,
     destinationName: String,
     modifier: Modifier = Modifier,
+    /** Banner colour — amber while guiding the follow route, green for normal nav. */
+    accent: Color = NavGreen,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         Surface(
             shape = RoundedCornerShape(20.dp),
-            color = NavGreen,
+            color = accent,
             shadowElevation = 6.dp,
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -1286,7 +1398,7 @@ private fun NavManeuverBanner(
         if (secondManeuverType != null) {
             Surface(
                 shape = RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp),
-                color = NavGreen.copy(alpha = 0.92f),
+                color = accent.copy(alpha = 0.92f),
                 modifier = Modifier.padding(start = 14.dp),
             ) {
                 Row(
@@ -1335,6 +1447,119 @@ private fun NavSpeedPill(speedKmh: Int?, modifier: Modifier = Modifier) {
     }
 }
 
+/** Tap-a-rider prompt: shows the rider's name and a Follow button before any routing. */
+@Composable
+private fun FollowPromptCard(
+    name: String,
+    onFollow: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val amber = Color(0xFFFF6D00)
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(16.dp),
+        shadowElevation = 8.dp,
+        modifier = modifier,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Box(Modifier.size(10.dp).clip(CircleShape).background(amber))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    name.ifBlank { "Rider" },
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = GeistFamily,
+                )
+            }
+            Surface(
+                onClick = onFollow,
+                shape = RoundedCornerShape(50),
+                color = amber,
+            ) {
+                Text(
+                    "Follow",
+                    color = Color.White,
+                    fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = GeistFamily,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Surface(
+                onClick = onDismiss,
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                modifier = Modifier.size(40.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(OpenDashIcons.X, contentDescription = "Dismiss",
+                        tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+    }
+}
+
+/** Compact amber chase readout that floats above the real nav sheet during navigation. */
+@Composable
+private fun FollowNavCard(
+    name: String,
+    etaMinutes: Int?,
+    distanceKm: Double?,
+    onStop: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val amber = Color(0xFFFF6D00)
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(16.dp),
+        shadowElevation = 8.dp,
+        modifier = modifier,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Box(Modifier.size(10.dp).clip(CircleShape).background(amber))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Following ${name.ifBlank { "rider" }}",
+                    color = amber, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                    fontFamily = GeistFamily,
+                )
+                val etaText = when {
+                    etaMinutes == null -> "-- min"
+                    etaMinutes >= 60   -> "${etaMinutes / 60} h ${etaMinutes % 60} min"
+                    else               -> "$etaMinutes min"
+                }
+                val distText = distanceKm?.let {
+                    if (it >= 10) "%.0f km".format(it) else "%.1f km".format(it)
+                } ?: "-- km"
+                Text(
+                    "$etaText · $distText",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = GeistFamily,
+                )
+            }
+            Surface(
+                onClick = onStop,
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                modifier = Modifier.size(40.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(OpenDashIcons.X, contentDescription = "Stop following",
+                        tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun NavBottomSheet(
     remainingKm: Double?,
@@ -1343,6 +1568,11 @@ private fun NavBottomSheet(
     onExit: () -> Unit,
     onToggleOverview: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Chase reuses this sheet but has no route overview — hide that button then. */
+    showOverview: Boolean = true,
+    /** ETA/exit accent — amber for a rider chase, green (default) for real nav. */
+    accent: Color = Ok,
+    title: String? = null,
 ) {
     val density = androidx.compose.ui.platform.LocalDensity.current
     val navBarDp = with(density) {
@@ -1385,9 +1615,18 @@ private fun NavBottomSheet(
                     mins >= 60   -> "${mins / 60} h ${mins % 60} min"
                     else         -> "$mins min"
                 }
+                if (title != null) {
+                    Text(
+                        title,
+                        color = accent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = GeistFamily,
+                    )
+                }
                 Text(
                     etaBig,
-                    color = Ok,
+                    color = accent,
                     fontSize = 22.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = GeistFamily,
@@ -1408,20 +1647,24 @@ private fun NavBottomSheet(
                 )
             }
 
-            // Route overview toggle (route options button).
-            Surface(
-                onClick = onToggleOverview,
-                shape = CircleShape,
-                color = if (overview) MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.surfaceContainerHighest,
-                modifier = Modifier.size(52.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(OpenDashIcons.Swap, contentDescription = "Route overview",
-                        tint = if (overview) MaterialTheme.colorScheme.onPrimaryContainer
-                               else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(24.dp))
+            // Route overview toggle (route options button) — hidden for the rider chase.
+            if (showOverview) {
+                Surface(
+                    onClick = onToggleOverview,
+                    shape = CircleShape,
+                    color = if (overview) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceContainerHighest,
+                    modifier = Modifier.size(52.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(OpenDashIcons.Swap, contentDescription = "Route overview",
+                            tint = if (overview) MaterialTheme.colorScheme.onPrimaryContainer
+                                   else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(24.dp))
+                    }
                 }
+            } else {
+                Spacer(Modifier.size(52.dp))   // keep the ETA visually centred
             }
         }
     }

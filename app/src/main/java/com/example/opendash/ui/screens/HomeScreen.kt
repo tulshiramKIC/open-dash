@@ -69,13 +69,6 @@ fun HomeScreen(
         ConnectionState.Offline   -> "Dash not connected" to MaterialTheme.colorScheme.outline
     }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "dot-pulse")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        1f, 0.35f,
-        animationSpec = infiniteRepeatable(tween(1800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "pulse",
-    )
-
     val lastRide = rides.firstOrNull()
     val nextService = garage.maint.minByOrNull { it.remainingKm }
 
@@ -84,6 +77,17 @@ fun HomeScreen(
     val nowPlaying by dashViewModel.nowPlaying.collectAsState()
     val incomingCall by dashViewModel.incomingCall.collectAsState()
     val isNavigating = routeState.navigating
+
+    // The status-dot pulse only animates while something is actually live (dash
+    // connected / navigating) — an always-on infinite animation keeps Compose
+    // invalidating every frame and the GPU awake while Home just sits idle.
+    val pulseAlpha = if (conn == ConnectionState.Connected || isNavigating) {
+        rememberInfiniteTransition(label = "dot-pulse").animateFloat(
+            1f, 0.35f,
+            animationSpec = infiniteRepeatable(tween(1800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "pulse",
+        ).value
+    } else 1f
 
     val homeCtx = androidx.compose.ui.platform.LocalContext.current
     val groupRideState by com.example.opendash.data.GroupRide.state.collectAsState()

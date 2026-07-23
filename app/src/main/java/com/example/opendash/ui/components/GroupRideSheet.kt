@@ -64,6 +64,29 @@ fun GroupRideSheet(
     var isNameError by remember { mutableStateOf(false) }
     val boxyShape = RoundedCornerShape(12.dp)
 
+    // Mesh Location shares GPS, so the join must actually ask for the location grant —
+    // without it LocationTracker silently no-ops and the rider broadcasts 0/0 forever
+    // (shows as "joined" but with no dot on anyone's map). We proceed either way once
+    // the dialog closes: the ride/intercom still forms, location just stays empty until
+    // granted.
+    var pendingJoin by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        pendingJoin?.invoke()
+        pendingJoin = null
+    }
+    fun withLocation(action: () -> Unit) {
+        val granted = ContextCompat.checkSelfPermission(
+            ctx, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) action()
+        else {
+            pendingJoin = action
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
     LaunchedEffect(isNameError) {
         if (isNameError) {
             delay(600)
@@ -71,15 +94,20 @@ fun GroupRideSheet(
         }
     }
 
-    val infiniteTransition = rememberInfiniteTransition()
-    val flickerAlpha by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.2f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(120, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        )
-    )
+    // The error flicker only animates during the 600 ms the error shows — an
+    // always-running 120 ms infinite animation would keep the sheet recomposing
+    // at frame rate (and the GPU awake) the whole time it's open.
+    val flickerAlpha = if (isNameError) {
+        rememberInfiniteTransition(label = "name-error").animateFloat(
+            initialValue = 1f,
+            targetValue = 0.2f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(120, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "flicker",
+        ).value
+    } else 1f
 
     Dialog(onDismissRequest = onDismiss) {
         OpenDashCard(
@@ -187,7 +215,7 @@ fun GroupRideSheet(
                                     return@OpenDashBtn
                                 }
                                 GroupRide.setRiderName(nameField)
-                                GroupRide.createRide()
+                                withLocation { GroupRide.createRide() }
                             },
                             icon = OpenDashIcons.GroupRide,
                             variant = BtnVariant.Primary,
@@ -272,7 +300,7 @@ fun GroupRideSheet(
                                                 return@clickable
                                             }
                                             GroupRide.setRiderName(nameField)
-                                            GroupRide.joinRide(codeField)
+                                            withLocation { GroupRide.joinRide(codeField) }
                                         }
                                         .padding(horizontal = 22.dp),
                                     contentAlignment = Alignment.Center
@@ -370,10 +398,13 @@ private fun ActiveRide(
             }
         }
 
-        // Riders Terminal Section
+        // Riders Terminal Section — only riders actually sharing their location.
+        // Someone on the intercom in the same ride with location off doesn't belong
+        // here until they join location sharing.
+        val locationPeers = state.peers.filter { it.locationOn }
         Spacer(Modifier.height(18.dp))
         Text(
-            "ACTIVE RIDERS (${state.peers.size})",
+            "ACTIVE RIDERS (${locationPeers.size})",
             color = MaterialTheme.colorScheme.outline,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
@@ -382,7 +413,7 @@ private fun ActiveRide(
         )
         Spacer(Modifier.height(6.dp))
 
-        if (state.peers.isEmpty()) {
+        if (locationPeers.isEmpty()) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = boxyShape,
@@ -403,7 +434,7 @@ private fun ActiveRide(
                 }
             }
         } else {
-            state.peers.forEach { peer ->
+            locationPeers.forEach { peer ->
                 val isAudioConnected = intercomState.activePeers.contains(peer.id)
                 val avatarColorIdx = Math.abs(peer.id.hashCode()) % PEER_COLORS.size
                 val avatarColor = if (peer.isStale) MaterialTheme.colorScheme.outline else Color(PEER_COLORS[avatarColorIdx])

@@ -74,15 +74,20 @@ fun IntercomSheet(
         }
     }
 
-    val infiniteTransition = rememberInfiniteTransition()
-    val flickerAlpha by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.2f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(120, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        )
-    )
+    // The error flicker only animates during the 600 ms the error shows — an
+    // always-running 120 ms infinite animation would keep the sheet recomposing
+    // at frame rate (and the GPU awake) the whole time it's open.
+    val flickerAlpha = if (isNameError) {
+        rememberInfiniteTransition(label = "name-error").animateFloat(
+            initialValue = 1f,
+            targetValue = 0.2f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(120, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "flicker",
+        ).value
+    } else 1f
 
     Dialog(onDismissRequest = onDismiss) {
         OpenDashCard(
@@ -450,10 +455,13 @@ private fun ActiveIntercom(
             }
         }
 
-        // Participant Terminal Section
+        // Participant Terminal Section — only riders actually in the voice mesh.
+        // Someone sharing location in the same ride but with intercom off doesn't
+        // belong in this list until they join it.
+        val voicePeers = state.peers.filter { it.intercomOn }
         Spacer(Modifier.height(18.dp))
         Text(
-            "ACTIVE CONNECTIONS (${state.peers.size})",
+            "ACTIVE CONNECTIONS (${voicePeers.size})",
             color = MaterialTheme.colorScheme.outline,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
@@ -462,7 +470,7 @@ private fun ActiveIntercom(
         )
         Spacer(Modifier.height(6.dp))
 
-        if (state.peers.isEmpty()) {
+        if (voicePeers.isEmpty()) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = boxyShape,
@@ -483,7 +491,7 @@ private fun ActiveIntercom(
                 }
             }
         } else {
-            state.peers.forEach { peer ->
+            voicePeers.forEach { peer ->
                 val isAudioConnected = intercomState.activePeers.contains(peer.id)
                 val avatarColorIdx = Math.abs(peer.id.hashCode()) % PEER_COLORS.size
                 val avatarColor = if (peer.isStale) MaterialTheme.colorScheme.outline else Color(PEER_COLORS[avatarColorIdx])

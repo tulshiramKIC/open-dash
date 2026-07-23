@@ -3,7 +3,9 @@
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
+  <!-- Material "brightness auto" (sun + A): the recognised glyph for an automatic
+       day/night switch, replacing the old map glyph that read as "open map". -->
   <path
       android:fillColor="#FFFFFF"
-      android:pathData="M20.5,3l-0.16,0.03L15,5.1L9,3L3.36,4.9C3.15,4.97 3,5.15 3,5.38V20.5c0,0.28 0.22,0.5 0.5,0.5l0.16,-0.03L9,18.9l6,2.1l5.64,-1.9c0.21,-0.07 0.36,-0.25 0.36,-0.48V3.5c0,-0.28 -0.22,-0.5 -0.5,-0.5zM15,19l-6,-2.11V5l6,2.11V19z"/>
+      android:pathData="M10.85,12.65h2.3L12,9l-1.15,3.65zM20,8.69V4h-4.69L12,0.69 8.69,4H4v4.69L0.69,12 4,15.31V20h4.69L12,23.31 15.31,20H20v-4.69L23.31,12 20,8.69zM14.3,16l-0.7,-2h-3.2l-0.7,2H7.8L11,7h2l3.2,9h-1.9z"/>
 </vector>

@@ -98,16 +98,9 @@ class LocationTracker(context: Context) {
             return
         }
 
-        val providers = mutableListOf<String>()
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            providers.add("fused")
-        }
-        providers.add(LocationManager.GPS_PROVIDER)
-        providers.add(LocationManager.NETWORK_PROVIDER)
-
         // Try to initialize with last known location from best available provider
         var lastKnownLoc: Location? = null
-        for (provider in providers) {
+        for (provider in listOf("fused", LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
             lastKnownLoc = lastKnownFrom(provider)
             if (lastKnownLoc != null) break
         }
@@ -115,18 +108,33 @@ class LocationTracker(context: Context) {
             _location.value = lastKnownLoc
         }
 
+        // One hot pipeline, not three. GPS at 1 Hz is the nav-grade source; NETWORK runs
+        // as a slow assist (10 s / 50 m) only for the cold-start window — acceptFix drops
+        // its fixes the moment GPS is fresh, so polling it at 1 Hz was pure battery burn.
+        // "fused" duplicated GPS entirely (acceptFix treats them as the same class).
         var registered = false
-        for (provider in providers) {
-            if (provider == LocationManager.GPS_PROVIDER && !hasFineLocationPermission()) continue
-            if (provider == "fused" && !hasFineLocationPermission()) continue
+        if (hasFineLocationPermission()) {
             runCatching {
-                if (lm.isProviderEnabled(provider)) {
-                    lm.requestLocationUpdates(provider, 1000L, 1.0f, listener, Looper.getMainLooper())
+                if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    lm.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER, 1000L, 1.0f, listener, Looper.getMainLooper()
+                    )
                     registered = true
                 }
             }.onFailure { error ->
-                DebugLog.w(TAG) { "$provider updates unavailable: ${error.message}" }
+                DebugLog.w(TAG) { "gps updates unavailable: ${error.message}" }
             }
+        }
+        runCatching {
+            if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                val (interval, minDist) = if (registered) 10_000L to 50f else 1000L to 1f
+                lm.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER, interval, minDist, listener, Looper.getMainLooper()
+                )
+                registered = true
+            }
+        }.onFailure { error ->
+            DebugLog.w(TAG) { "network updates unavailable: ${error.message}" }
         }
         running = registered
         if (registered) DebugLog.i(TAG) { "Location updates started" }

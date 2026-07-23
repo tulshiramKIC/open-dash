@@ -83,7 +83,13 @@ object Router {
                 put("intermediates", intermediates)
             }
             put("travelMode", mode.googleMode)
-            put("routingPreference", "TRAFFIC_AWARE_OPTIMAL")
+            // TRAFFIC_AWARE (not _OPTIMAL): still traffic-aware for ETA + congestion, but
+            // far more STABLE call-to-call. _OPTIMAL re-optimises against a live-traffic
+            // model that shifts second-to-second, so the main route (computed once) and the
+            // chase route (recomputed every ~9s) would intermittently snap to different
+            // parallel ways for the same A→B — the "nav route looks offset" artifact. It's
+            // also faster/cheaper.
+            put("routingPreference", "TRAFFIC_AWARE")
             // Without this, speedReadingIntervals never appear in the response — the
             // field mask alone doesn't turn traffic-on-polyline computation on.
             put("extraComputations", JSONArray().put("TRAFFIC_ON_POLYLINE"))

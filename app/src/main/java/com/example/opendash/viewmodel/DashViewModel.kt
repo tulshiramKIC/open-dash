@@ -89,6 +89,15 @@ data class DashUiState(
     val musicMode: Boolean = false,   // joystick is in MUSIC control mode (badge shown on dash)
     val isCustomTrail: Boolean = false,
     val trailStart: Pair<Double, Double>? = null,
+    // "Chase a biker": a secondary route to a moving group-ride peer, drawn in its own
+    // colour and fully independent of the main navigation above.
+    val chasePeerId: String? = null,
+    val chasePeerName: String? = null,
+    val chaseRoutePoints: List<GeoPoint> = emptyList(),
+    val chaseDistanceKm: Double? = null,
+    val chaseEtaMinutes: Int? = null,
+    /** Turn-by-turn is currently guiding the chase (shorter) route — banner shows amber. */
+    val chaseGuidanceActive: Boolean = false,
 )
 
 class DashViewModel(app: Application) : AndroidViewModel(app) {
@@ -396,8 +405,16 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
      * no foreground service — just location updates driving [tick]. The dash stream, when the
      * bike is connected, runs independently via [connect].
      */
+    private var navCrashContext = false
+
     fun startNavEngine() {
         location.start()
+        // In-app navigation is a ride context even without the dash/keep-alive service —
+        // crash detection arms here too (Settings toggle still gates it).
+        if (!navCrashContext) {
+            navCrashContext = true
+            com.example.opendash.data.CrashDetector.enterRideContext(getApplication())
+        }
     }
 
     // ── Connection ─────────────────────────────────────────────────────────
@@ -681,6 +698,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             mapZoom = zoom,
             isCustomTrail = isCustomTrail,
             trailStart = trailStart,
+            // Seed distance/ETA from the route itself so the notification's trip-progress
+            // bar has a duration the moment navigation starts — the first GPS tick then
+            // refines it with live values.
+            remainingKm = initialRoute?.totalMeters?.div(1000.0),
+            etaMinutes = initialRoute?.totalSeconds?.div(60.0)?.toInt(),
         )
         destLat = lat
         destLng = lng
@@ -701,6 +723,10 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Drop the destination/route → free roam. The map keeps streaming and follows the rider. */
     fun exitNavigation() {
+        if (navCrashContext) {
+            navCrashContext = false
+            com.example.opendash.data.CrashDetector.exitRideContext()
+        }
         destLat = null
         destLng = null
         route = null
@@ -744,12 +770,112 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
                 route = r
                 alternateRoutes = list.drop(1).map { it.geometry }
                 tiles.prefetchRoute(r.geometry)
-                _ui.value = _ui.value.copy(hasRoute = true, routePoints = r.geometry, routeCongestion = r.congestion)
+                _ui.value = _ui.value.copy(
+                    hasRoute = true,
+                    routePoints = r.geometry,
+                    routeCongestion = r.congestion,
+                    remainingKm = r.totalMeters / 1000.0,
+                    etaMinutes = (r.totalSeconds / 60.0).toInt(),
+                )
                 DebugLog.i("DashViewModel") { "Route ready: ${r.geometry.size} pts, ${r.totalMeters.toInt()} m, ${alternateRoutes.size} alt" }
             } else {
                 DebugLog.w("DashViewModel") { "Router returned no routes" }
             }
         }
+    }
+
+    // ── Chase a biker ───────────────────────────────────────────────────────
+    // Route to a moving group-ride peer, recomputed on a slow poll. It lives entirely in
+    // its own UI fields (chaseRoutePoints) and never touches destLat/route/voice, so the
+    // rider's real navigation is unaffected — this is just a second coloured line.
+    private var chaseJob: Job? = null
+    @Volatile private var chasePeerId: String? = null
+    private var lastChaseDest: GeoPoint? = null
+    private var lastChaseOrigin: GeoPoint? = null
+    // Full chase route (geometry + maneuvers) so turn-by-turn can run on it; the maneuver
+    // banner + voice follow whichever of {main route, chase} is SHORTER to reach.
+    @Volatile private var chaseNavRoute: com.example.opendash.dash.nav.Route? = null
+    private var lastGuideWasChase = false
+    // Reroute when an endpoint moves more than ~this many seconds of travel at its speed,
+    // clamped to [min, max] metres. Speed-based so highway chases don't reroute every poll.
+    private val CHASE_REROUTE_SECONDS = 12.0
+    private val CHASE_MIN_MOVE_M = 25.0
+    private val CHASE_MAX_MOVE_M = 400.0
+
+    /** Toggle: start chasing [peerId], or stop if already chasing them. */
+    fun toggleChasePeer(peerId: String) {
+        if (chasePeerId == peerId) stopChasePeer() else startChasePeer(peerId)
+    }
+
+    fun startChasePeer(peerId: String) {
+        // Gated so the rider can switch the whole feature (and its Router polling) off.
+        if (!com.example.opendash.data.NavSettings.chaseRiderEnabled.value) return
+        chasePeerId = peerId
+        lastChaseDest = null
+        lastChaseOrigin = null
+        chaseJob?.cancel()
+        chaseJob = viewModelScope.launch {
+            while (isActive && chasePeerId == peerId) {
+                val peer = com.example.opendash.data.GroupRide.state.value.peers
+                    .firstOrNull { it.id == peerId }
+                val loc = location.lastKnown()
+                if (peer != null && (peer.lat != 0.0 || peer.lng != 0.0) && loc != null) {
+                    val origin = GeoPoint(loc.latitude, loc.longitude)
+                    val destPt = GeoPoint(peer.lat, peer.lng)
+                    // Speed-scaled reroute threshold, per endpoint: ~CHASE_REROUTE_SECONDS
+                    // of travel at that endpoint's current speed, floored/capped. A flat
+                    // 25 m rerouted every single poll at highway speed (pure API waste);
+                    // scaling it means the route refreshes on roughly a fixed cadence in
+                    // time, cheaper when fast and still responsive when slow/stationary.
+                    val riderMs = loc.speed.toDouble().coerceAtLeast(0.0)
+                    val peerMs = peer.speedKmh / 3.6
+                    fun threshold(speedMs: Double) =
+                        (speedMs * CHASE_REROUTE_SECONDS).coerceIn(CHASE_MIN_MOVE_M, CHASE_MAX_MOVE_M)
+                    val originMoved = lastChaseOrigin?.let {
+                        GeoPoint.distMeters(it, origin) > threshold(riderMs)
+                    } ?: true
+                    val destMoved = lastChaseDest?.let {
+                        GeoPoint.distMeters(it, destPt) > threshold(peerMs)
+                    } ?: true
+                    if (originMoved || destMoved) {
+                        val r = runCatching { Router.routes(origin, destPt, alternatives = false) }
+                            .getOrNull()?.firstOrNull()
+                        if (r != null) {
+                            lastChaseOrigin = origin
+                            lastChaseDest = destPt
+                            chaseNavRoute = r   // full route for turn-by-turn guidance
+                            _ui.value = _ui.value.copy(
+                                chasePeerId = peerId,
+                                chasePeerName = peer.name,
+                                chaseRoutePoints = r.geometry,
+                                chaseDistanceKm = r.totalMeters / 1000.0,
+                                chaseEtaMinutes = (r.totalSeconds / 60.0).toInt(),
+                            )
+                            // Switch the turn-by-turn to the follow route NOW rather than
+                            // waiting for the next GPS tick (which is slow when stationary).
+                            if (route != null) tick()
+                        }
+                    }
+                }
+                delay(9_000)
+            }
+        }
+    }
+
+    fun stopChasePeer() {
+        chasePeerId = null
+        chaseJob?.cancel(); chaseJob = null
+        lastChaseDest = null; lastChaseOrigin = null
+        chaseNavRoute = null
+        // Turn-by-turn reverts to the main navigation next tick; force a fresh trip so
+        // the main route's guidance re-announces cleanly instead of resuming mid-chase.
+        if (lastGuideWasChase) { voice.resetTrip(); lastGuideWasChase = false }
+        _ui.value = _ui.value.copy(
+            chasePeerId = null, chasePeerName = null, chaseRoutePoints = emptyList(),
+            chaseDistanceKm = null, chaseEtaMinutes = null, chaseGuidanceActive = false,
+        )
+        // Revert turn-by-turn to the main route immediately, not on the next GPS tick.
+        if (route != null) tick()
     }
 
     // ── Map controls ────────────────────────────────────────────────────────
@@ -865,6 +991,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
         var nextManeuverForUi: com.example.opendash.dash.nav.Maneuver? = null
         var secondManeuverForUi: com.example.opendash.dash.nav.Maneuver? = null
         var nextTurnM: Double? = null
+        var guideChaseForUi = false   // turn-by-turn is currently on the chase route
         // Travel direction only, like Google Maps nav: trust the GPS bearing solely while
         // actually moving. When stationary the fused provider feeds the COMPASS into
         // loc.bearing, which would spin the map/marker as the phone is turned in hand —
@@ -875,10 +1002,26 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
 
         if (r != null && loc != null) {
             val ns = trackProgress(r, GeoPoint(loc.latitude, loc.longitude))
-            remainingM = ns.remainingM
-            nextTurnM = ns.nextTurnM
-            nextManeuverForUi = ns.nextManeuver
-            secondManeuverForUi = ns.nextManeuver2
+            remainingM = ns.remainingM   // main-route ETA/remaining is unchanged
+            // Turn-by-turn follows whichever of {main, chase} is SHORTER to reach. The
+            // chase route is re-anchored to the rider every few seconds, so its remaining is
+            // a fair distance to the biker. When the chase is closed it's null → reverts.
+            // While a chase is active, turn-by-turn guides the FOLLOW route — deterministic
+            // (no distance comparison that would flip-flop or lag). Reverts to the main
+            // route the instant the chase is closed (chaseNavRoute → null).
+            var guide = ns
+            val cr0 = chaseNavRoute
+            if (cr0 != null) {
+                guide = guidanceOn(cr0, GeoPoint(loc.latitude, loc.longitude))
+                guideChaseForUi = true
+            }
+            // Re-announce cleanly whenever guidance flips between the two routes.
+            if (guideChaseForUi != lastGuideWasChase) {
+                voice.resetTrip(); lastGuideWasChase = guideChaseForUi
+            }
+            nextTurnM = guide.nextTurnM
+            nextManeuverForUi = guide.nextManeuver
+            secondManeuverForUi = guide.nextManeuver2
             val headingKnown = loc.hasBearing() && loc.speed >= 1.5f
             val headingOff = headingKnown && angleDelta(loc.bearing, ns.heading) > 50f
             offRoute = when {
@@ -907,7 +1050,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             // Feed the dash's own turn-by-turn widget with CORRECT distances (next-turn
             // + total remaining) and real arrival time. Glyph stays CONTINUE until
             // other codes are verified.
-            val (pv, pu) = toDashDistance(ns.nextTurnM)
+            val (pv, pu) = toDashDistance(guide.nextTurnM)
             val (tv, tu) = toDashDistance(ns.remainingM)
             val arrival = java.util.Calendar.getInstance().apply {
                 add(java.util.Calendar.SECOND, etaSec!!.toInt())
@@ -918,11 +1061,11 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             session.updateNavInfo(DashCommands.NAV_MANEUVER_CONTINUE, pv, pu, tv, tu, etaHHMM)
             // Olive banner under the video band: per-step guidance text (like the RE
             // app's "towards Bypass Rd"), falling back to the destination between steps.
-            val guidance = ns.nextManeuver?.instruction?.takeIf { it.isNotBlank() }
+            val guidance = guide.nextManeuver?.instruction?.takeIf { it.isNotBlank() }
                 ?: _ui.value.destinationName
             guidance?.let { session.updateGuidanceText(it) }
             // Spoken/chime turn guidance (no-op when voice mode is OFF).
-            voice.maybeAnnounce(ns.nextManeuver, ns.nextTurnM, ns.remainingM)
+            voice.maybeAnnounce(guide.nextManeuver, guide.nextTurnM, guide.remainingM)
         } else if (loc != null && dLat != null && dLng != null) {
             remainingM = GeoPoint.distMeters(
                 GeoPoint(loc.latitude, loc.longitude), GeoPoint(dLat, dLng)
@@ -959,6 +1102,7 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
             maneuverLng = nextManeuverForUi?.location?.lng,
             maneuverRoad = nextManeuverForUi?.let { navRoadFromInstruction(it.instruction) },
             offRoute = offRoute,
+            chaseGuidanceActive = guideChaseForUi,
         )
 
         updateThermal()
@@ -1678,6 +1822,36 @@ class DashViewModel(app: Application) : AndroidViewModel(app) {
     )
 
     private data class Match(val cum: Double, val dist: Double, val bearing: Float, val proj: GeoPoint)
+
+    /**
+     * Stateless next-maneuver lookup on an arbitrary route (used for the chase route so it
+     * never disturbs the main route's [progressM] tracking). Global nearest-point search —
+     * cheap because the chase route is short and re-anchored to the rider every few seconds.
+     */
+    private fun guidanceOn(r: Route, pos: GeoPoint): NavState {
+        val geom = r.geometry
+        val cum = r.cumulative
+        if (geom.size < 2) return NavState(0.0, 0.0, 0f, false, pos, 0.0, null, null)
+        var bestDist = Double.MAX_VALUE; var bestCum = 0.0; var bestBearing = 0f; var bestProj = pos
+        for (i in 0 until geom.size - 1) {
+            val (proj, t) = GeoPoint.projectOnSegment(pos, geom[i], geom[i + 1])
+            val d = GeoPoint.distMeters(pos, proj)
+            if (d < bestDist) {
+                bestDist = d
+                bestCum = cum[i] + GeoPoint.distMeters(geom[i], geom[i + 1]) * t
+                bestBearing = GeoPoint.bearing(geom[i], geom[i + 1]).toFloat()
+                bestProj = proj
+            }
+        }
+        val remaining = (r.totalMeters - bestCum).coerceAtLeast(0.0)
+        val upcoming = r.maneuvers.filter {
+            it.cumulativeMeters > bestCum + 1.0 && it.type != com.example.opendash.dash.nav.ManeuverType.DEPART
+        }
+        val nextMan = upcoming.getOrNull(0)
+        val nextMan2 = upcoming.getOrNull(1)
+        val nextTurn = nextMan?.let { (it.cumulativeMeters - bestCum).coerceAtLeast(0.0) } ?: remaining
+        return NavState(remaining, nextTurn, bestBearing, false, bestProj, bestDist, nextMan, nextMan2)
+    }
 
     private fun trackProgress(r: Route, pos: GeoPoint): NavState {
         val geom = r.geometry

@@ -15,6 +15,10 @@ object NavSettings {
     private const val KEY_MAP_THEME = "map_theme"
     private const val KEY_INTERCOM_VOLUME = "intercom_volume"
     private const val KEY_MESH_CODE = "mesh_code"
+    private const val KEY_CRASH_SOS = "crash_sos_enabled"
+    private const val KEY_SOS_CONTACT = "sos_contact"
+    private const val KEY_NORTH_UP_NAV = "north_up_nav"
+    private const val KEY_CHASE_RIDER = "chase_rider_enabled"
 
     /** Map day/night theme. AUTO switches to night at [NIGHT_START_HOUR] and back at [DAY_START_HOUR]. */
     enum class MapTheme { DAY, NIGHT, AUTO }
@@ -38,6 +42,28 @@ object NavSettings {
     private val _meshCode = MutableStateFlow("")
     val meshCode = _meshCode.asStateFlow()
 
+    // Crash detection + SOS SMS. Off by default — arming an accelerometer watch and
+    // sending SMS on the rider's behalf must be an explicit opt-in.
+    private val _crashSosEnabled = MutableStateFlow(false)
+    val crashSosEnabled = _crashSosEnabled.asStateFlow()
+
+    private val _sosContact = MutableStateFlow("")
+    val sosContact = _sosContact.asStateFlow()
+
+    /**
+     * Navigation camera style, Google's "keep map north up" option: false (default) =
+     * heading-up, the map rotates with travel and the rider icon points screen-up;
+     * true = map stays north-up and only the beam/icon rotates.
+     */
+    private val _northUpNav = MutableStateFlow(false)
+    val northUpNav = _northUpNav.asStateFlow()
+
+    // "Navigate to a rider" (chase). Each active chase polls the routing API as riders
+    // move, so it's a togglable feature — off avoids any Router billing entirely.
+    private val _chaseRiderEnabled = MutableStateFlow(true)
+    val chaseRiderEnabled = _chaseRiderEnabled.asStateFlow()
+
+
     /** Whether the map should render dark right now, given the current mode + clock. */
     fun nightActive(theme: MapTheme = _mapTheme.value): Boolean = when (theme) {
         MapTheme.DAY -> false
@@ -57,6 +83,22 @@ object NavSettings {
         }.getOrDefault(MapTheme.AUTO)
         _intercomVolume.value = prefs.getFloat(KEY_INTERCOM_VOLUME, 1.0f)
         _meshCode.value = prefs.getString(KEY_MESH_CODE, "") ?: ""
+        _crashSosEnabled.value = prefs.getBoolean(KEY_CRASH_SOS, false)
+        _sosContact.value = prefs.getString(KEY_SOS_CONTACT, "") ?: ""
+        _northUpNav.value = prefs.getBoolean(KEY_NORTH_UP_NAV, false)
+        _chaseRiderEnabled.value = prefs.getBoolean(KEY_CHASE_RIDER, true)
+    }
+
+    fun setChaseRiderEnabled(context: Context, on: Boolean) {
+        _chaseRiderEnabled.value = on
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_CHASE_RIDER, on).apply()
+    }
+
+    fun setNorthUpNav(context: Context, on: Boolean) {
+        _northUpNav.value = on
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_NORTH_UP_NAV, on).apply()
     }
 
     fun setCustomTrailsEnabled(context: Context, on: Boolean) {
@@ -89,5 +131,20 @@ object NavSettings {
         _meshCode.value = sanitized
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putString(KEY_MESH_CODE, sanitized).apply()
+    }
+
+    fun setCrashSosEnabled(context: Context, on: Boolean) {
+        _crashSosEnabled.value = on
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_CRASH_SOS, on).apply()
+        // Live sessions react immediately — no restart needed.
+        if (on) CrashDetector.startIfRideActive(context) else CrashDetector.stop()
+    }
+
+    fun setSosContact(context: Context, number: String) {
+        val sanitized = number.filter { it.isDigit() || it == '+' }.take(16)
+        _sosContact.value = sanitized
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_SOS_CONTACT, sanitized).apply()
     }
 }

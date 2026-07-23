@@ -12,6 +12,7 @@ import io.github.jan.supabase.realtime.realtime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,6 +63,7 @@ object GroupRide {
     private const val EVENT_POS = "pos"
     private const val EVENT_BYE = "bye"
     private const val EVENT_SIGNAL = "signal"
+    private const val EVENT_SOS = "sos"
 
     /** Peer older than this renders greyed-out ("last seen…"). */
     const val STALE_MS = 20_000L
@@ -77,9 +79,13 @@ object GroupRide {
         val lng: Double,
         val bearing: Float,
         val speedKmh: Int,
+        /** They're in the voice mesh (broadcast "ic" flag). */
+        val intercomOn: Boolean,
         val updatedAtMs: Long,
     ) {
         val isStale: Boolean get() = System.currentTimeMillis() - updatedAtMs > STALE_MS
+        /** They're sharing a real position (0/0 is the "location off" placeholder). */
+        val locationOn: Boolean get() = lat != 0.0 || lng != 0.0
     }
 
     data class State(
@@ -100,13 +106,24 @@ object GroupRide {
 
     private val _state = MutableStateFlow(State())
     val state = _state.asStateFlow()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // A last-resort guard: supabase-kt's Realtime teardown can still throw from its own
+    // internal coroutines (outside ours). Swallow-and-log so a library race can never
+    // take the whole app down mid-ride.
+    private val crashGuard = kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+        DebugLog.w(TAG) { "group-ride coroutine error (contained): ${e.message}" }
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + crashGuard)
     private var appContext: Context? = null
     private var deviceId: String = ""
     private var channel: RealtimeChannel? = null
     private var rideJob: Job? = null
+    /** The 4 broadcastFlow collectors, cancelled sequentially in [leaveRide]. */
+    private var flowJobs: List<Job> = emptyList()
     private var tracker: LocationTracker? = null
     private val peersById = LinkedHashMap<String, Peer>()
+
+    /** Last moment the channel provably worked (a publish succeeded or a peer was heard). */
+    @Volatile private var lastTrafficMs = 0L
 
     // Rebuilt when the keys change (Settings → API Keys), so no app restart is needed.
     private var cachedClient: io.github.jan.supabase.SupabaseClient? = null
@@ -161,6 +178,14 @@ object GroupRide {
     }
 
     fun joinRide(rawCode: String, intercomOnly: Boolean = false) {
+        joinRideInternal(rawCode, intercom = intercomOnly, location = !intercomOnly)
+    }
+
+    /** True while the rider wants to be in a ride; cleared only by an explicit leave. */
+    @Volatile private var desired = false
+    private var retryAttempt = 0
+
+    private fun joinRideInternal(rawCode: String, intercom: Boolean, location: Boolean) {
         val code = rawCode.trim().uppercase()
         if (!isValidCode(code)) {
             _state.value = _state.value.copy(error = "Invalid ride code")
@@ -170,14 +195,28 @@ object GroupRide {
             _state.value = _state.value.copy(error = "Supabase keys not configured")
             return
         }
-        leaveRide()   // at most one ride at a time
-        val startIntercom = intercomOnly
-        val startLocation = !intercomOnly
+        // Remember the code so it's the default next time and survives a rejoin.
+        appContext?.let { NavSettings.setMeshCode(it, code) }
+
+        // Already in this exact ride: just switch on the requested mode(s) instead of
+        // tearing the session down and rebuilding it. leaveRide() would stop the
+        // IntercomEngine and drop the channel, so "join location while the intercom is
+        // up" used to kill the call and then race the reconnect logic. Merging keeps
+        // both live and makes the modes additive.
+        if (_state.value.active && _state.value.code == code) {
+            if (intercom) enableIntercom()
+            if (location) enableLocationSharing()
+            return
+        }
+        leaveRide()   // switching codes: at most one ride at a time
+        desired = true
+        val startIntercom = intercom
+        val startLocation = location
         _state.value = _state.value.copy(
             connecting = true,
             code = code,
             error = null,
-            isIntercomOnly = intercomOnly,
+            isIntercomOnly = intercom && !location,
             isIntercomActive = startIntercom,
             isLocationActive = startLocation,
         )
@@ -191,26 +230,34 @@ object GroupRide {
                     startIntercomEngine(ch)
                 }
 
-                // Collector must be registered before subscribe() or early messages drop.
-                launch {
-                    ch.broadcastFlow<JsonObject>(event = EVENT_POS).collect { onPos(it) }
-                }
-                launch {
-                    ch.broadcastFlow<JsonObject>(event = EVENT_BYE).collect { onBye(it) }
-                }
-                launch {
-                    ch.broadcastFlow<JsonObject>(event = EVENT_SIGNAL).collect { onSignal(it) }
-                }
+                // Collectors run on the shared scope (NOT as children of rideJob) so
+                // leaveRide can cancel them ONE AT A TIME: supabase-kt's
+                // CallbackManager.removeCallbackById races on a shared AtomicMutableList
+                // when several broadcastFlow collectors tear down at once, throwing
+                // IndexOutOfBounds and crashing the whole app (that's what killed
+                // "join again after leaving"). Registered before subscribe() so no early
+                // message is missed.
+                flowJobs = listOf(
+                    scope.launch { ch.broadcastFlow<JsonObject>(event = EVENT_POS).collect { onPos(it) } },
+                    scope.launch { ch.broadcastFlow<JsonObject>(event = EVENT_BYE).collect { onBye(it) } },
+                    scope.launch { ch.broadcastFlow<JsonObject>(event = EVENT_SIGNAL).collect { onSignal(it) } },
+                    scope.launch { ch.broadcastFlow<JsonObject>(event = EVENT_SOS).collect { onSos(it) } },
+                )
 
                 ch.subscribe(blockUntilSubscribed = true)
+                retryAttempt = 0   // link proved good — future failures back off from scratch
                 _state.value = _state.value.copy(active = true, connecting = false)
                 DebugLog.i(TAG) { "joined ride $code as $deviceId" }
-                // Keep publishing with the screen off / app backgrounded (foreground
-                // service + wakelock, shared with dash streaming and trail recording).
-                appContext?.let {
-                    com.example.opendash.dash.DashKeepAliveService.start(
-                        it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
-                    )
+                // The keep-alive service (ongoing notification + wakelock) runs only for
+                // the intercom — a location-only ride stays notification-free by rider
+                // preference, accepting that sharing pauses if Android freezes the app
+                // in the background (screen off, other apps foregrounded).
+                if (startIntercom) {
+                    appContext?.let {
+                        com.example.opendash.dash.DashKeepAliveService.start(
+                            it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
+                        )
+                    }
                 }
 
                 val t = LocationTracker(requireNotNull(appContext)).also { tracker = it }
@@ -226,13 +273,40 @@ object GroupRide {
                 throw e
             } catch (e: Exception) {
                 DebugLog.w(TAG) { "ride failed: ${e.message}" }
+                val hadIntercom = _state.value.isIntercomActive
+                val hadLocation = _state.value.isLocationActive
                 IntercomEngine.stopIntercom()
                 appContext?.let {
                     com.example.opendash.dash.DashKeepAliveService.stop(
                         it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
                     )
                 }
-                _state.value = State(error = e.message ?: "Connection failed")
+                if (desired) {
+                    // Dead zones are part of riding: the session self-heals instead of
+                    // dying with a terminal error. Exponential backoff 5s → 60s; the
+                    // attempt counter resets whenever a join actually succeeds.
+                    retryAttempt++
+                    val backoffMs =
+                        (5_000L shl (retryAttempt - 1).coerceAtMost(4)).coerceAtMost(60_000L)
+                    _state.value = State(
+                        riderName = _state.value.riderName,
+                        connecting = true,
+                        code = code,
+                        error = "Reconnecting (attempt $retryAttempt)…",
+                    )
+                    scope.launch {
+                        delay(backoffMs)
+                        // Still wanted, still this ride, and nothing else connected meanwhile.
+                        if (desired && !_state.value.active && _state.value.code == code) {
+                            joinRideInternal(code, hadIntercom, hadLocation)
+                        }
+                    }
+                } else {
+                    _state.value = State(
+                        riderName = _state.value.riderName,
+                        error = e.message ?: "Connection failed",
+                    )
+                }
             }
         }
     }
@@ -261,6 +335,13 @@ object GroupRide {
         if (_state.value.isIntercomActive) return
         _state.value = _state.value.copy(isIntercomActive = true)
         startIntercomEngine(ch)
+        // Re-kick the keep-alive so startForeground() re-runs and picks up the
+        // MICROPHONE foreground-service type now that the voice mesh is on.
+        appContext?.let {
+            com.example.opendash.dash.DashKeepAliveService.start(
+                it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
+            )
+        }
         DebugLog.d(TAG) { "Enabled Intercom on active session ${_state.value.code}" }
     }
 
@@ -277,6 +358,13 @@ object GroupRide {
             leaveRide()
         } else {
             _state.value = _state.value.copy(isIntercomActive = false)
+            // The session is location-only from here — drop the keep-alive (and its
+            // notification) entirely; it exists only for the intercom.
+            appContext?.let {
+                com.example.opendash.dash.DashKeepAliveService.stop(
+                    it, com.example.opendash.dash.DashKeepAliveService.REASON_RIDE
+                )
+            }
             DebugLog.d(TAG) { "Stopped Intercom only on session ${_state.value.code}" }
         }
     }
@@ -292,6 +380,8 @@ object GroupRide {
     }
 
     fun leaveRide() {
+        desired = false
+        retryAttempt = 0
         val ch = channel
         rideJob?.cancel(); rideJob = null
         tracker?.stop(); tracker = null
@@ -303,15 +393,22 @@ object GroupRide {
         }
         channel = null
         peersById.clear()
-        if (ch != null) {
+        val jobs = flowJobs
+        flowJobs = emptyList()
+        if (ch != null || jobs.isNotEmpty()) {
             scope.launch {
-                runCatching {
+                // Serial teardown: each collector's library-side callback removal
+                // completes before the next starts, so removeCallbackById never races.
+                jobs.forEach { runCatching { it.cancelAndJoin() } }
+                if (ch != null) runCatching {
                     ch.broadcast(EVENT_BYE, buildJsonObject { put("id", deviceId) })
                     client.realtime.removeChannel(ch)
                 }
             }
         }
-        _state.value = State()
+        // Keep the rider's name — it's identity, not session state (a silent
+        // foreground rejoin would otherwise re-announce us as "Rider").
+        _state.value = State(riderName = _state.value.riderName)
     }
 
     /**
@@ -338,13 +435,35 @@ object GroupRide {
                     put("t", System.currentTimeMillis())
                 },
             )
-        }.onFailure { DebugLog.w(TAG) { "broadcast failed: ${it.message}" } }
+        }.onSuccess { lastTrafficMs = System.currentTimeMillis() }
+            .onFailure { DebugLog.w(TAG) { "broadcast failed: ${it.message}" } }
+    }
+
+    /**
+     * Called when the app returns to the foreground. A location-only ride runs without a
+     * foreground service, so Android freezes the process in the background and the
+     * Realtime websocket usually dies with it. If the channel has been silent past the
+     * publish interval, silently rejoin the same code so the map is live again instead
+     * of showing stale peers until the rider notices.
+     */
+    fun onAppForeground() {
+        val s = _state.value
+        if (!s.active) return
+        val silentMs = System.currentTimeMillis() - lastTrafficMs
+        if (silentMs < PUBLISH_INTERVAL_MS * 4) return
+        val code = s.code ?: return
+        DebugLog.i(TAG) { "channel silent ${silentMs / 1000}s — rejoining ride $code" }
+        // Rejoin with the exact modes that were live (a mixed intercom+location session
+        // keeps both), not just the isIntercomOnly approximation.
+        joinRideInternal(code, intercom = s.isIntercomActive, location = s.isLocationActive)
     }
 
     private fun onPos(msg: JsonObject) {
+        lastTrafficMs = System.currentTimeMillis()
         runCatching {
             val id = msg["id"]?.jsonPrimitive?.content ?: return
             if (id == deviceId) return
+            val peerHasIntercom = msg["ic"]?.jsonPrimitive?.content?.toBoolean() ?: false
             val peer = Peer(
                 id = id,
                 name = msg["n"]?.jsonPrimitive?.content ?: "Rider",
@@ -353,6 +472,7 @@ object GroupRide {
                 lng = msg["lng"]?.jsonPrimitive?.double ?: return,
                 bearing = msg["brg"]?.jsonPrimitive?.float ?: 0f,
                 speedKmh = msg["spd"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
+                intercomOn = peerHasIntercom,
                 // Local receive time, not sender time — phones' clocks disagree.
                 updatedAtMs = System.currentTimeMillis(),
             )
@@ -362,7 +482,6 @@ object GroupRide {
                 // out our publish interval before we appear in their list.
                 scope.launch { channel?.let { ch -> tracker?.let { t -> publishPosition(ch, t) } } }
             }
-            val peerHasIntercom = msg["ic"]?.jsonPrimitive?.content?.toBoolean() ?: false
             if (_state.value.isIntercomActive && peerHasIntercom) {
                 // Only one side of a pair offers, or the two offers collide (glare) and
                 // both peer connections stall in have-local-offer.
@@ -374,6 +493,47 @@ object GroupRide {
             }
             pushPeers()
         }.onFailure { DebugLog.w(TAG) { "bad pos payload: ${it.message}" } }
+    }
+
+    /**
+     * Our crash SOS fired — tell every rider on the channel. Runs whenever a ride is
+     * live (intercom or location mode alike) and needs nothing from the receiver: no
+     * SMS permission, no emergency contact, not even their own Crash-SOS toggle —
+     * that toggle arms *their* detector, it doesn't opt them out of hearing that a
+     * ridemate went down. Returns false when no ride is active.
+     */
+    fun broadcastSos(lat: Double?, lng: Double?): Boolean {
+        val ch = channel ?: return false
+        if (!_state.value.active) return false
+        val name = _state.value.riderName.ifBlank { "A rider" }
+        scope.launch {
+            runCatching {
+                ch.broadcast(
+                    EVENT_SOS,
+                    buildJsonObject {
+                        put("id", deviceId)
+                        put("n", name)
+                        put("lat", lat ?: 0.0)
+                        put("lng", lng ?: 0.0)
+                        put("t", System.currentTimeMillis())
+                    },
+                )
+            }.onFailure { DebugLog.w(TAG) { "sos broadcast failed: ${it.message}" } }
+        }
+        return true
+    }
+
+    private fun onSos(msg: JsonObject) {
+        lastTrafficMs = System.currentTimeMillis()
+        runCatching {
+            val id = msg["id"]?.jsonPrimitive?.content ?: return
+            if (id == deviceId) return
+            val name = msg["n"]?.jsonPrimitive?.content ?: "A rider"
+            val lat = msg["lat"]?.jsonPrimitive?.double ?: 0.0
+            val lng = msg["lng"]?.jsonPrimitive?.double ?: 0.0
+            DebugLog.i(TAG) { "peer SOS from $name" }
+            appContext?.let { CrashDetector.onPeerSos(it, name, lat, lng) }
+        }.onFailure { DebugLog.w(TAG) { "bad sos payload: ${it.message}" } }
     }
 
     private fun onSignal(msg: JsonObject) {

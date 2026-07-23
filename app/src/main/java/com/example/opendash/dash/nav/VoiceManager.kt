@@ -44,26 +44,83 @@ class VoiceManager private constructor(context: Context) {
     @Volatile private var ttsReady = false
     private var tone: ToneGenerator? = null
 
+    // ── Transient ducking focus: music apps lower their volume while a direction
+    //    plays and restore it after, Google-Maps style. The intercom's voice stream
+    //    is USAGE_VOICE_COMMUNICATION and doesn't duck — a human talking outranks
+    //    the robot. ──
+    private val audioManager = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val guidanceAttrs = android.media.AudioAttributes.Builder()
+        .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
+    private var focusRequest: android.media.AudioFocusRequest? = null
+    private val focusTimeout = Runnable { releaseDuckFocus() }
+
+    private fun requestDuckFocus() {
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val req = focusRequest ?: android.media.AudioFocusRequest
+                    .Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                    .setAudioAttributes(guidanceAttrs)
+                    .build().also { focusRequest = it }
+                audioManager.requestAudioFocus(req)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(
+                    null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                )
+            }
+        }
+    }
+
+    private fun releaseDuckFocus() {
+        handler.removeCallbacks(focusTimeout)
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION") audioManager.abandonAudioFocus(null)
+            }
+        }
+    }
+
     private fun ensureTts() {
         if (tts != null) return
         tts = TextToSpeech(app) { status ->
             ttsReady = status == TextToSpeech.SUCCESS
-            if (ttsReady) tts?.language = Locale.getDefault()
-            else DebugLog.w(TAG) { "TextToSpeech init failed: $status" }
+            if (ttsReady) {
+                tts?.language = Locale.getDefault()
+                tts?.setAudioAttributes(guidanceAttrs)
+                // Un-duck the moment the utterance actually finishes.
+                tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) = releaseDuckFocus()
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) = releaseDuckFocus()
+                })
+            } else DebugLog.w(TAG) { "TextToSpeech init failed: $status" }
         }
     }
 
     private fun chime() {
         runCatching {
             if (tone == null) tone = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
+            requestDuckFocus()
             tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 180)
+            handler.postDelayed(focusTimeout, 450)
         }.onFailure { DebugLog.w(TAG) { "chime failed: ${it.message}" } }
     }
 
     private fun speak(text: String) {
         ensureTts()
-        if (ttsReady) tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, text.hashCode().toString())
-        else chime() // engine not ready yet → at least beep
+        if (ttsReady) {
+            requestDuckFocus()
+            // Safety net: if the completion callback never fires, un-duck anyway.
+            handler.removeCallbacks(focusTimeout)
+            handler.postDelayed(focusTimeout, 8_000)
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, text.hashCode().toString())
+        } else chime() // engine not ready yet → at least beep
     }
 
     // ── Announcement scheduling ────────────────────────────────────────────────
@@ -109,6 +166,8 @@ class VoiceManager private constructor(context: Context) {
     fun resetTrip() { lastManeuverKey = -1.0; farDone = false; nearDone = false; arrived = false }
 
     fun shutdown() {
+        releaseDuckFocus()
+        handler.removeCallbacksAndMessages(null)
         runCatching { tts?.stop(); tts?.shutdown() }
         tts = null; ttsReady = false
         runCatching { tone?.release() }; tone = null
