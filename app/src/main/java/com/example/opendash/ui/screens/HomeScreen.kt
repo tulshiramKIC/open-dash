@@ -264,7 +264,7 @@ fun HomeScreen(
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OpenDashBtn(
-                        label = if (groupRideState.active && groupRideState.isLocationActive) "Sharing" else "Group ride",
+                        label = if (groupRideState.active && groupRideState.isLocationActive) "Sharing" else "Location",
                         icon = OpenDashIcons.GroupRide,
                         variant = if (groupRideState.active && groupRideState.isLocationActive) BtnVariant.Primary else BtnVariant.Secondary,
                         onClick = { showGroupRide = true },

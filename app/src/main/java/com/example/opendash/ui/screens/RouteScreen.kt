@@ -891,7 +891,11 @@ fun RouteScreen(
                                 .clickable { voiceManager.setMode(nextVoice) },
                         ) {
                             Icon(
-                                if (voiceMode == VoiceMode.OFF) OpenDashIcons.SpeakerOff else OpenDashIcons.Speaker,
+                                when (voiceMode) {
+                                    VoiceMode.OFF   -> OpenDashIcons.SpeakerOff
+                                    VoiceMode.CHIME -> OpenDashIcons.Bell
+                                    VoiceMode.FULL  -> OpenDashIcons.Speaker
+                                },
                                 contentDescription = "Voice: ${voiceMode.name.lowercase()}",
                                 tint = if (voiceMode == VoiceMode.OFF) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(22.dp),

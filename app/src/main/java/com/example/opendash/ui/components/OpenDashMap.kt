@@ -480,8 +480,11 @@ fun OpenDashMap(
                 lineCap = org.maplibre.android.style.layers.Property.LINE_CAP_ROUND
             }
             lineMgr = LineManager(mapView, m, style).apply {
-                // Round ends so congestion segment runs join seamlessly at their seams.
-                lineCap = org.maplibre.android.style.layers.Property.LINE_CAP_ROUND
+                // Butt (flat) ends so each congestion run starts/ends in a clean straight
+                // cut across the route instead of a rounded semicircle bulge. Round caps
+                // made every traffic-run boundary balloon out; a flat cut meets the
+                // neighbouring run edge-to-edge and reads like Google's traffic overlay.
+                lineCap = org.maplibre.android.style.layers.Property.LINE_CAP_BUTT
             }
             chaseAboveMgr = LineManager(mapView, m, style).apply {
                 lineCap = org.maplibre.android.style.layers.Property.LINE_CAP_ROUND
